@@ -92,6 +92,8 @@ Each mixin handles a single domain:
 - **ManipulationMixin**: Move, rotate, scale, copy, delete, change color/layer
 - **BlockMixin**: List, query, insert, create blocks, manage attributes
 - **ExportMixin**: Extract structured data, export to formatted Excel
+- **ArchitectureMixin**: Discovers the installed ACA automation API and creates
+  native walls, doors, windows, and opening-to-wall anchors
 - **UtilityMixin**: Color conversion, coordinate validation, helpers
 
 ### 4. Adapter Manager (`adapters/adapter_manager.py`)
@@ -109,6 +111,13 @@ Each mixin handles a single domain:
 ### 6. Spatial Topology Engine (`topology_engine/`)
 
 The topology layer receives immutable, plain-coordinate snapshots from the CAD bridge. COM entities never leave the calling thread. It builds explicit semantic nodes from `TOPOSPATIAL_TOPOLOGY` XData, reports untagged enclosed areas as candidates, derives spatial relationships, validates strict change documents, and stores expiring preview transactions. Apply runs inside one CAD undo group; JSON-LD and deterministic Turtle sidecars are updated only after CAD modifications succeed.
+
+Representation selection is capability-based and occurs during preview. `auto`
+selects native `AecDbWall`, `AecDbDoor`, and `AecDbWindow` objects when AutoCAD
+Architecture and a compatible native wall host are available; otherwise it selects
+the standard-entity adapter. Explicit `native_aec` requests fail safely during
+preview when those requirements are not met. The resolved value is stored in the
+transaction and XData, so apply never makes a different representation decision.
 
 ---
 

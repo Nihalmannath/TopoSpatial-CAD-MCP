@@ -124,7 +124,29 @@ In architectural practice, room dimensions always refer to **clear interior usab
 
 ---
 
-### 7. DWG & JSON-LD as Source of Truth
+### 7. Native AutoCAD Architecture Authoring
+
+When AutoCAD Architecture is the active product, topology transactions can
+create native `AecDbWall`, `AecDbDoor`, and `AecDbWindow` objects. Doors and
+windows are attached with native opening-to-wall anchors, so ACA wall cleanup,
+styles, schedules, and object editing remain available. The server discovers the
+installed AEC automation version at runtime; it is not tied to a single ACA year.
+
+Each create or update change accepts a `representation` policy:
+
+- `auto` (default): use native AEC objects when ACA is available and the opening
+  has a native wall host; otherwise use standard AutoCAD entities.
+- `native_aec`: require native ACA authoring and fail preview if it is unavailable
+  or the opening host is not a native wall.
+- `standard`: always use portable lines, arcs, and polylines.
+
+The selected representation is frozen into the preview transaction and persisted
+in XData, preventing preview/apply drift. Inspect support and installed styles with
+`manage_session` action `capabilities` before preparing a transaction.
+
+---
+
+### 8. DWG & JSON-LD as Source of Truth
 TopologicPy operates strictly as an on-demand **computational layer**, ensuring that your underlying project data remains portable and vendor-neutral in standard DWG XData and JSON-LD graphs.
 
 ```json
@@ -154,7 +176,7 @@ TopoSpatial-CAD MCP provides **8 unified tools** dispatching 56+ CAD commands:
 | **`manage_layers`** | `list`, `create`, `delete`, `rename`, `on`, `off`, `lock`, `unlock`, `color` | Layer state management and filtering. |
 | **`manage_entities`** | `select`, `move`, `rotate`, `scale`, `copy`, `paste`, `delete`, `color` | Handle-based entity manipulation and property assignments. |
 | **`manage_files`** | `new`, `open`, `save`, `close`, `list`, `switch` | Multi-drawing tab management and export to DWG / DXF / PDF. |
-| **`manage_session`** | `connect`, `status`, `zoom_extents`, `undo`, `redo`, `dashboard` | Connection pooling, viewport navigation, and session diagnostics. |
+| **`manage_session`** | `connect`, `status`, `capabilities`, `zoom_extents`, `undo`, `redo`, `dashboard` | Thread-local connection handling, native ACA/style capability discovery, viewport navigation, and session diagnostics. |
 | **`export_data`** | `json`, `excel` (all / selected entities) | Drawing data extraction with automated Excel multi-sheet reports. |
 
 ---
@@ -209,8 +231,8 @@ Add to `%APPDATA%\Claude\claude_desktop_config.json`:
 ## Verification & Testing
 
 ```powershell
-# Run the test suite (181 tests)
-uv run pytest -m "not slow and not integration" tests/unit
+# Run the full test suite
+uv run pytest
 
 # Type checking
 uv run mypy --config-file mypy.ini src/server.py
@@ -233,7 +255,7 @@ TopoSpatial-CAD-MCP/
 │   ├── topology_engine/       # Spatial topology, XData schemas, transactions
 │   ├── ui/                    # UI resources and inspector templates
 │   └── web/                   # Real-time CAD status dashboard
-├── tests/                     # 181 unit & integration tests
+├── tests/                     # Unit, transaction, adapter, and integration tests
 ├── docs/                      # Complete architecture & setup documentation
 └── mkdocs.yml                 # Documentation site configuration
 ```

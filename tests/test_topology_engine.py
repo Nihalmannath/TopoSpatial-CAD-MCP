@@ -162,6 +162,8 @@ def test_create_room_uses_clear_interior_contract() -> None:
         "clear_depth": 4000.0,
         "wall_thickness": 200.0,
         "rotation_deg": 0.0,
+        "wall_height": 3000.0,
+        "wall_style": "Standard",
     }
 
 
@@ -217,6 +219,55 @@ def test_snapshot_revision_changes_with_geometry_or_semantics() -> None:
     assert base.revision != moved.revision
     assert base.revision != tagged.revision
     json.dumps(base.entities[0].canonical())
+
+
+def test_annotating_native_aec_wall_preserves_geometry_and_representation() -> None:
+    wall = EntitySnapshot(
+        handle="A1",
+        object_type="AecDbWall",
+        layer="A-WALL",
+        geometry={
+            "kind": "line",
+            "start": [0, 0, 0],
+            "end": [5000, 0, 0],
+            "thickness": 250,
+            "height": 3200,
+            "style": "CMU-250",
+            "representation": "native_aec",
+        },
+    )
+    snapshot = DrawingSnapshot("aca.dwg", "", "mm", [wall])
+    analysis = TopologyEngine().analyze(snapshot)
+    document = ChangeDocument.model_validate(
+        {
+            "@context": {"top": "http://w3id.org/topologicpy#"},
+            "base_revision": snapshot.revision,
+            "changes": [
+                {
+                    "op": "annotate",
+                    "@id": "urn:wall:existing",
+                    "@type": "top:Wall",
+                    "targets": {"handles": ["A1"]},
+                }
+            ],
+        }
+    )
+
+    operations, diff, warnings = TopologyEngine().plan_changes(
+        document, snapshot, analysis
+    )
+
+    assert operations[0]["representation"] == "native_aec"
+    assert operations[0]["geometry"] == {
+        "kind": "line",
+        "start": [0.0, 0.0, 0.0],
+        "end": [5000.0, 0.0, 0.0],
+        "thickness": 250.0,
+        "height": 3200.0,
+        "style": "CMU-250",
+    }
+    assert diff[0]["representation"] == "native_aec"
+    assert warnings == []
 
 
 def test_room_delete_requires_cascade_for_hosted_openings() -> None:

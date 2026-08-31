@@ -234,6 +234,7 @@ class TopologyEngine:
                 ("group_id", "cad:groupId"),
                 ("host_wall_id", "cad:hostWall"),
                 ("parent_id", "cad:parent"),
+                ("representation", "cad:representation"),
             ):
                 value = semantic.get(source_key)
                 if value not in (None, ""):
@@ -708,6 +709,15 @@ class TopologyEngine:
             annotation_geometry = self._annotation_geometry(
                 change.ontology_class, group
             )
+            source_representations = {
+                str(entity.geometry.get("representation", "standard"))
+                for entity in group
+            }
+            representation = (
+                "native_aec"
+                if source_representations == {"native_aec"}
+                else "standard"
+            )
             group_semantic_id: str | None = (
                 change.semantic_id if len(groups) == 1 else None
             )
@@ -719,8 +729,12 @@ class TopologyEngine:
                 "label": change.label or "",
                 "managed": False,
                 "geometry": annotation_geometry,
+                "representation": representation,
             }
-            if change.ontology_class == "top:Wall":
+            if (
+                change.ontology_class == "top:Wall"
+                and "thickness" not in group[0].geometry
+            ):
                 operation["warnings"] = [
                     "Annotated wall thickness defaults to 200 mm; update the "
                     "semantic wall if a different thickness is required"
@@ -755,12 +769,17 @@ class TopologyEngine:
                     "A straight wall annotation requires exactly one line or "
                     "two-vertex polyline"
                 )
-            return {
+            geometry = {
                 "kind": "line",
                 "start": [float(start[0]), float(start[1]), 0.0],
                 "end": [float(end[0]), float(end[1]), 0.0],
-                "thickness": 200.0,
+                "thickness": float(source.get("thickness", 200.0)),
             }
+            if "height" in source:
+                geometry["height"] = float(source["height"])
+            if "style" in source:
+                geometry["style"] = str(source["style"])
+            return geometry
         return self._combined_geometry(group)
 
     def _annotation_groups(
@@ -815,6 +834,7 @@ class TopologyEngine:
             "ontology_class": change.ontology_class,
             "label": change.label or "",
             "geometry": geometry,
+            "representation": change.representation,
         }
 
     def _plan_update(
@@ -866,6 +886,11 @@ class TopologyEngine:
             if change.label is not None
             else node.get("rdfs:label", ""),
             "geometry": geometry,
+            "representation": (
+                node.get("cad:representation", "auto")
+                if change.representation == "auto"
+                else change.representation
+            ),
             "old_handles": sorted(set(old_handles)),
         }
 
@@ -1007,6 +1032,7 @@ class TopologyEngine:
             "ontology_class": operation.get("ontology_class"),
             "handles": operation.get("handles", operation.get("old_handles", [])),
             "operation": kind,
+            "representation": operation.get("representation"),
         }
 
     @staticmethod
@@ -1038,6 +1064,8 @@ class TopologyEngine:
                 "clear_depth",
                 "wall_thickness",
                 "rotation_deg",
+                "wall_height",
+                "wall_style",
             }
             normalized = {
                 "origin": point("origin"),
@@ -1045,18 +1073,31 @@ class TopologyEngine:
                 "clear_depth": positive("clear_depth"),
                 "wall_thickness": positive("wall_thickness", 200.0),
                 "rotation_deg": float(value.get("rotation_deg", 0.0)),
+                "wall_height": positive("wall_height", 3000.0),
+                "wall_style": str(value.get("wall_style", "Standard")),
             }
         elif ontology_class == "top:Wall":
-            allowed = {"start", "end", "thickness"}
+            allowed = {"start", "end", "thickness", "height", "style"}
             normalized = {
                 "start": point("start"),
                 "end": point("end"),
                 "thickness": positive("thickness", 200.0),
+                "height": positive("height", 3000.0),
+                "style": str(value.get("style", "Standard")),
             }
             if normalized["start"] == normalized["end"]:
                 raise ValueError("wall start and end must differ")
         elif ontology_class == "top:Door":
-            allowed = {"host_wall_id", "offset", "width", "hinge", "swing"}
+            allowed = {
+                "host_wall_id",
+                "offset",
+                "width",
+                "height",
+                "style",
+                "hinge",
+                "swing",
+                "swing_angle_deg",
+            }
             if not value.get("host_wall_id"):
                 raise ValueError("door geometry requires host_wall_id")
             if value.get("hinge") not in ("left", "right"):
@@ -1067,22 +1108,37 @@ class TopologyEngine:
                 "host_wall_id": str(value["host_wall_id"]),
                 "offset": float(value.get("offset", 0.0)),
                 "width": positive("width", 900.0),
+                "height": positive("height", 2100.0),
+                "style": str(value.get("style", "Standard")),
                 "hinge": value["hinge"],
                 "swing": value["swing"],
+                "swing_angle_deg": positive("swing_angle_deg", 90.0),
             }
             if normalized["offset"] < 0:
                 raise ValueError("door offset cannot be negative")
         elif ontology_class == "top:Window":
-            allowed = {"host_wall_id", "offset", "width"}
+            allowed = {
+                "host_wall_id",
+                "offset",
+                "width",
+                "height",
+                "sill_height",
+                "style",
+            }
             if not value.get("host_wall_id"):
                 raise ValueError("window geometry requires host_wall_id")
             normalized = {
                 "host_wall_id": str(value["host_wall_id"]),
                 "offset": float(value.get("offset", 0.0)),
                 "width": positive("width", 1200.0),
+                "height": positive("height", 1200.0),
+                "sill_height": float(value.get("sill_height", 900.0)),
+                "style": str(value.get("style", "Standard")),
             }
             if normalized["offset"] < 0:
                 raise ValueError("window offset cannot be negative")
+            if normalized["sill_height"] < 0:
+                raise ValueError("window sill_height cannot be negative")
         else:
             raise ValueError(f"Unsupported ontology class '{ontology_class}'")
         unknown = set(value) - allowed

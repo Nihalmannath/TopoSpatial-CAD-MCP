@@ -70,6 +70,10 @@ def register_topology_tools(mcp: Any) -> None:
             payload: Action-specific structured data. ``preview`` accepts a strict
                 JSON-LD-shaped change document. ``apply`` requires
                 ``{"transaction_id": "..."}``.
+                Create/update changes may set ``representation`` to ``auto``
+                (default), ``native_aec``, or ``standard``. Auto uses native
+                AecDbWall/AecDbDoor/AecDbWindow objects when AutoCAD Architecture
+                is active and safely falls back to standard entities otherwise.
             format: ``jsonld`` or ``ttl`` for export.
 
         Returns:
@@ -216,6 +220,11 @@ def register_topology_tools(mcp: Any) -> None:
                 operations, diff, warnings = _engine.plan_changes(
                     document, snapshot, analysis
                 )
+                _bridge.resolve_operation_representations(
+                    adapter, operations, analysis
+                )
+                for item, operation in zip(diff, operations):
+                    item["representation"] = operation.get("representation")
                 transaction = _transactions.create(
                     drawing_name=snapshot.drawing_name,
                     base_revision=snapshot.revision,

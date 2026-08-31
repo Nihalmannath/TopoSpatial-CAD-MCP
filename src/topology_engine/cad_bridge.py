@@ -75,6 +75,34 @@ class CADTopologyBridge:
 
     def _extract_geometry(self, entity: Any, object_type: str) -> Dict[str, Any]:
         upper = object_type.upper()
+        if upper == "AECDBWALL":
+            return {
+                "kind": "line",
+                "start": self._point(
+                    self._safe_get(entity, "StartPoint", (0, 0, 0))
+                ),
+                "end": self._point(self._safe_get(entity, "EndPoint", (0, 0, 0))),
+                "thickness": float(self._safe_get(entity, "Width", 0.0)),
+                "height": float(self._safe_get(entity, "BaseHeight", 0.0)),
+                "style": str(self._safe_get(entity, "StyleName", "")),
+                "representation": "native_aec",
+            }
+        if upper in {"AECDBDOOR", "AECDBWINDOW"}:
+            geometry = {
+                "kind": "point",
+                "position": self._point(
+                    self._safe_get(entity, "Location", (0, 0, 0))
+                ),
+                "width": float(self._safe_get(entity, "Width", 0.0)),
+                "height": float(self._safe_get(entity, "Height", 0.0)),
+                "style": str(self._safe_get(entity, "StyleName", "")),
+                "representation": "native_aec",
+            }
+            if upper == "AECDBWINDOW":
+                geometry["sill_height"] = float(
+                    self._safe_get(entity, "SillHeight", 0.0)
+                )
+            return geometry
         if "LINE" in upper and "POLY" not in upper:
             return {
                 "kind": "line",
@@ -245,6 +273,103 @@ class CADTopologyBridge:
                 logger.exception("Failed to roll back topology transaction")
             raise
 
+    def resolve_operation_representations(
+        self,
+        adapter: Any,
+        operations: Sequence[Dict[str, Any]],
+        analysis: Dict[str, Any],
+    ) -> None:
+        """Resolve ``auto`` during preview so apply is deterministic."""
+        wall_representations = {
+            node["@id"]: node.get("cad:representation", "standard")
+            for node in analysis.get("graph", {}).get("@graph", [])
+            if node.get("@type") == "top:Wall"
+        }
+        for operation in operations:
+            kind = operation.get("kind")
+            ontology_class = operation.get("ontology_class")
+            if kind == "annotate_handles":
+                if ontology_class == "top:Wall":
+                    semantic_id = operation.get("semantic_id")
+                    if semantic_id:
+                        wall_representations[semantic_id] = operation.get(
+                            "representation", "standard"
+                        )
+                continue
+            if kind not in {"create_managed", "replace_managed"}:
+                continue
+            requested = operation.get("representation", "auto")
+            selected = self._select_representation(adapter, requested)
+            if ontology_class in {"top:Wall", "top:Room"}:
+                operation["representation"] = selected
+                semantic_id = operation.get("semantic_id")
+                if ontology_class == "top:Wall" and semantic_id:
+                    wall_representations[semantic_id] = selected
+                elif ontology_class == "top:Room" and semantic_id:
+                    for index in range(1, 5):
+                        wall_representations[f"{semantic_id}:wall:{index}"] = selected
+                continue
+            if ontology_class not in {"top:Door", "top:Window"}:
+                continue
+            host_id = operation.get("geometry", {}).get("host_wall_id")
+            host_representation = wall_representations.get(host_id, "standard")
+            if selected == "native_aec" and host_representation != "native_aec":
+                if requested == "native_aec":
+                    raise ValueError(
+                        "native_aec openings require a native AecDbWall host"
+                    )
+                selected = "standard"
+            operation["representation"] = selected
+        self._validate_native_styles(adapter, operations)
+
+    @staticmethod
+    def _validate_native_styles(
+        adapter: Any, operations: Sequence[Dict[str, Any]]
+    ) -> None:
+        native_operations = [
+            operation
+            for operation in operations
+            if operation.get("representation") == "native_aec"
+            and operation.get("kind") in {"create_managed", "replace_managed"}
+        ]
+        if not native_operations:
+            return
+        capability_method = getattr(adapter, "get_architecture_capabilities", None)
+        if not callable(capability_method):
+            return
+        capabilities = capability_method(include_styles=True)
+        if capabilities.get("style_warning"):
+            raise ValueError(
+                "Could not validate AutoCAD Architecture styles: "
+                + str(capabilities["style_warning"])
+            )
+        styles = capabilities.get("styles")
+        if not isinstance(styles, dict):
+            return
+
+        style_contract = {
+            "top:Room": ("wall", "wall_style"),
+            "top:Wall": ("wall", "style"),
+            "top:Door": ("door", "style"),
+            "top:Window": ("window", "style"),
+        }
+        for operation in native_operations:
+            ontology_class = str(operation.get("ontology_class", ""))
+            contract = style_contract.get(ontology_class)
+            if contract is None:
+                continue
+            collection_name, geometry_key = contract
+            geometry = operation.get("geometry", {})
+            requested = str(geometry.get(geometry_key, "Standard")).strip()
+            available = [str(name) for name in styles.get(collection_name, [])]
+            canonical = {name.casefold(): name for name in available}
+            if requested.casefold() not in canonical:
+                raise ValueError(
+                    f"Unknown ACA {collection_name} style '{requested}'. "
+                    f"Available styles: {', '.join(available) or '(none)'}"
+                )
+            geometry[geometry_key] = canonical[requested.casefold()]
+
     def _apply_operation(
         self, adapter: Any, document: Any, operation: Dict[str, Any]
     ) -> Dict[str, Any]:
@@ -301,14 +426,43 @@ class CADTopologyBridge:
         semantic_id = operation["semantic_id"]
         geometry = operation["geometry"]
         label = operation.get("label", "")
+        representation = operation.get("representation", "auto")
         if ontology_class == "top:Room":
-            return self._create_room(adapter, document, semantic_id, label, geometry)
+            return self._create_room(
+                adapter,
+                document,
+                semantic_id,
+                label,
+                geometry,
+                representation=representation,
+            )
         if ontology_class == "top:Wall":
-            return self._create_wall(adapter, document, semantic_id, label, geometry)
+            return self._create_wall(
+                adapter,
+                document,
+                semantic_id,
+                label,
+                geometry,
+                representation=representation,
+            )
         if ontology_class == "top:Door":
-            return self._create_door(adapter, document, semantic_id, label, geometry)
+            return self._create_door(
+                adapter,
+                document,
+                semantic_id,
+                label,
+                geometry,
+                representation=representation,
+            )
         if ontology_class == "top:Window":
-            return self._create_window(adapter, document, semantic_id, label, geometry)
+            return self._create_window(
+                adapter,
+                document,
+                semantic_id,
+                label,
+                geometry,
+                representation=representation,
+            )
         raise ValueError(f"Unsupported managed class '{ontology_class}'")
 
     def _create_room(
@@ -318,6 +472,7 @@ class CADTopologyBridge:
         semantic_id: str,
         label: str,
         geometry: Dict[str, Any],
+        representation: str = "auto",
     ) -> List[Dict[str, Any]]:
         origin = tuple(geometry["origin"])
         width = float(geometry["clear_width"])
@@ -347,6 +502,8 @@ class CADTopologyBridge:
                 "start": list(self._transform(local_start, origin, rotation)),
                 "end": list(self._transform(local_end, origin, rotation)),
                 "thickness": thickness,
+                "height": float(geometry.get("wall_height", 3000.0)),
+                "style": str(geometry.get("wall_style", "Standard")),
             }
             created.extend(
                 self._create_wall(
@@ -356,6 +513,7 @@ class CADTopologyBridge:
                     f"{label} Wall {index}".strip(),
                     wall_geometry,
                     parent_id=semantic_id,
+                    representation=representation,
                 )
             )
         return created
@@ -407,19 +565,34 @@ class CADTopologyBridge:
         label: str,
         geometry: Dict[str, Any],
         parent_id: str | None = None,
+        representation: str = "auto",
     ) -> List[Dict[str, Any]]:
         self._ensure_layer(adapter, document, WALL_LAYER, "white")
-        polygon = self._wall_polygon(
-            geometry["start"], geometry["end"], geometry["thickness"]
-        )
-        handle = adapter.draw_polyline(
-            [(point[0], point[1], 0.0) for point in polygon],
-            closed=True,
-            layer=WALL_LAYER,
-            color="white",
-            lineweight=0,
-            _skip_refresh=True,
-        )
+        actual_representation = self._select_representation(adapter, representation)
+        object_type = "AcDbPolyline"
+        if actual_representation == "native_aec":
+            native = adapter.create_native_wall(
+                (*geometry["start"], 0.0),
+                (*geometry["end"], 0.0),
+                width=float(geometry["thickness"]),
+                height=float(geometry.get("height", 3000.0)),
+                style=str(geometry.get("style", "Standard")),
+                layer=WALL_LAYER,
+            )
+            handle = native["handle"]
+            object_type = native["object_type"]
+        else:
+            polygon = self._wall_polygon(
+                geometry["start"], geometry["end"], geometry["thickness"]
+            )
+            handle = adapter.draw_polyline(
+                [(point[0], point[1], 0.0) for point in polygon],
+                closed=True,
+                layer=WALL_LAYER,
+                color="white",
+                lineweight=0,
+                _skip_refresh=True,
+            )
         payload = {
             "semantic_id": semantic_id,
             "ontology_class": "top:Wall",
@@ -427,6 +600,7 @@ class CADTopologyBridge:
             "group_id": parent_id or semantic_id,
             "managed": True,
             "geometry": geometry,
+            "representation": actual_representation,
         }
         if parent_id:
             payload["parent_id"] = parent_id
@@ -436,6 +610,8 @@ class CADTopologyBridge:
                 "semantic_id": semantic_id,
                 "ontology_class": "top:Wall",
                 "handles": [handle],
+                "representation": actual_representation,
+                "object_type": object_type,
             }
         ]
 
@@ -446,6 +622,7 @@ class CADTopologyBridge:
         semantic_id: str,
         label: str,
         geometry: Dict[str, Any],
+        representation: str = "auto",
     ) -> List[Dict[str, Any]]:
         self._ensure_layer(adapter, document, DOOR_LAYER, "yellow")
         wall = self._find_host_wall(document, geometry["host_wall_id"])
@@ -456,6 +633,27 @@ class CADTopologyBridge:
         width = float(geometry["width"])
         if offset + width > length + 1e-6:
             raise ValueError("door extends beyond its host wall")
+        actual_representation = self._select_opening_representation(
+            adapter, representation, wall
+        )
+        if actual_representation == "native_aec":
+            native = adapter.create_native_opening(
+                "door",
+                host_handle=wall["_entity_handle"],
+                offset=offset,
+                width=width,
+                height=float(geometry.get("height", 2100.0)),
+                style=str(geometry.get("style", "Standard")),
+                layer=DOOR_LAYER,
+                hinge=str(geometry["hinge"]),
+                swing=str(geometry["swing"]),
+                swing_angle=float(geometry.get("swing_angle_deg", 90.0)),
+            )
+            handles = [native["handle"]]
+            object_type = native["object_type"]
+        else:
+            handles = []
+            object_type = "AcDbLine+AcDbArc"
         hinge_at_start = geometry["hinge"] == "left"
         hinge_offset = offset if hinge_at_start else offset + width
         hinge = self._add(start, self._scale(direction, hinge_offset))
@@ -465,25 +663,29 @@ class CADTopologyBridge:
             swing_sign *= -1.0
         open_direction = self._scale(normal, swing_sign)
         leaf_end = self._add(hinge, self._scale(open_direction, width))
-        leaf_handle = adapter.draw_line(
-            (*hinge, 0.0),
-            (*leaf_end, 0.0),
-            layer=DOOR_LAYER,
-            color="yellow",
-            lineweight=0,
-            _skip_refresh=True,
-        )
-        start_angle, end_angle = self._door_arc_angles(closed_direction, open_direction)
-        arc_handle = adapter.draw_arc(
-            (*hinge, 0.0),
-            width,
-            start_angle,
-            end_angle,
-            layer=DOOR_LAYER,
-            color="yellow",
-            lineweight=0,
-            _skip_refresh=True,
-        )
+        if actual_representation == "standard":
+            leaf_handle = adapter.draw_line(
+                (*hinge, 0.0),
+                (*leaf_end, 0.0),
+                layer=DOOR_LAYER,
+                color="yellow",
+                lineweight=0,
+                _skip_refresh=True,
+            )
+            start_angle, end_angle = self._door_arc_angles(
+                closed_direction, open_direction
+            )
+            arc_handle = adapter.draw_arc(
+                (*hinge, 0.0),
+                width,
+                start_angle,
+                end_angle,
+                layer=DOOR_LAYER,
+                color="yellow",
+                lineweight=0,
+                _skip_refresh=True,
+            )
+            handles = [leaf_handle, arc_handle]
         payload = {
             "semantic_id": semantic_id,
             "ontology_class": "top:Door",
@@ -492,14 +694,17 @@ class CADTopologyBridge:
             "managed": True,
             "host_wall_id": geometry["host_wall_id"],
             "geometry": geometry,
+            "representation": actual_representation,
         }
-        for handle in (leaf_handle, arc_handle):
+        for handle in handles:
             self.write_xdata(document, document.HandleToObject(handle), payload)
         return [
             {
                 "semantic_id": semantic_id,
                 "ontology_class": "top:Door",
-                "handles": [leaf_handle, arc_handle],
+                "handles": handles,
+                "representation": actual_representation,
+                "object_type": object_type,
             }
         ]
 
@@ -510,6 +715,7 @@ class CADTopologyBridge:
         semantic_id: str,
         label: str,
         geometry: Dict[str, Any],
+        representation: str = "auto",
     ) -> List[Dict[str, Any]]:
         self._ensure_layer(adapter, document, WINDOW_LAYER, "cyan")
         wall = self._find_host_wall(document, geometry["host_wall_id"])
@@ -518,23 +724,42 @@ class CADTopologyBridge:
         width = float(geometry["width"])
         if offset + width > length + 1e-6:
             raise ValueError("window extends beyond its host wall")
+        actual_representation = self._select_opening_representation(
+            adapter, representation, wall
+        )
+        if actual_representation == "native_aec":
+            native = adapter.create_native_opening(
+                "window",
+                host_handle=wall["_entity_handle"],
+                offset=offset,
+                width=width,
+                height=float(geometry.get("height", 1200.0)),
+                style=str(geometry.get("style", "Standard")),
+                layer=WINDOW_LAYER,
+                sill_height=float(geometry.get("sill_height", 900.0)),
+            )
+            handles = [native["handle"]]
+            object_type = native["object_type"]
+        else:
+            handles = []
+            object_type = "AcDbLine"
         start_point = self._add(start, self._scale(direction, offset))
         end_point = self._add(start_point, self._scale(direction, width))
-        handles: List[str] = []
-        for normal_offset in (-thickness / 6.0, thickness / 6.0):
-            delta = self._scale(normal, normal_offset)
-            line_start = self._add(start_point, delta)
-            line_end = self._add(end_point, delta)
-            handles.append(
-                adapter.draw_line(
-                    (*line_start, 0.0),
-                    (*line_end, 0.0),
-                    layer=WINDOW_LAYER,
-                    color="cyan",
-                    lineweight=0,
-                    _skip_refresh=True,
+        if actual_representation == "standard":
+            for normal_offset in (-thickness / 6.0, thickness / 6.0):
+                delta = self._scale(normal, normal_offset)
+                line_start = self._add(start_point, delta)
+                line_end = self._add(end_point, delta)
+                handles.append(
+                    adapter.draw_line(
+                        (*line_start, 0.0),
+                        (*line_end, 0.0),
+                        layer=WINDOW_LAYER,
+                        color="cyan",
+                        lineweight=0,
+                        _skip_refresh=True,
+                    )
                 )
-            )
         payload = {
             "semantic_id": semantic_id,
             "ontology_class": "top:Window",
@@ -543,6 +768,7 @@ class CADTopologyBridge:
             "managed": True,
             "host_wall_id": geometry["host_wall_id"],
             "geometry": geometry,
+            "representation": actual_representation,
         }
         for handle in handles:
             self.write_xdata(document, document.HandleToObject(handle), payload)
@@ -551,6 +777,8 @@ class CADTopologyBridge:
                 "semantic_id": semantic_id,
                 "ontology_class": "top:Window",
                 "handles": handles,
+                "representation": actual_representation,
+                "object_type": object_type,
             }
         ]
 
@@ -563,8 +791,55 @@ class CADTopologyBridge:
             ):
                 geometry = semantic.get("geometry")
                 if isinstance(geometry, dict):
-                    return semantic
+                    result = dict(semantic)
+                    result["_entity_handle"] = str(
+                        self._safe_get(entity, "Handle", "")
+                    )
+                    result["_object_type"] = str(
+                        self._safe_get(entity, "ObjectName", "")
+                    )
+                    return result
         raise ValueError(f"Host wall '{semantic_id}' was not found")
+
+    @staticmethod
+    def _select_representation(adapter: Any, requested: str) -> str:
+        if requested not in {"auto", "native_aec", "standard"}:
+            raise ValueError(
+                "representation must be auto, native_aec, or standard"
+            )
+        if requested == "standard":
+            return "standard"
+        capability_method = getattr(adapter, "get_architecture_capabilities", None)
+        capabilities = (
+            capability_method(include_styles=False)
+            if callable(capability_method)
+            else {}
+        )
+        native_available = bool(
+            isinstance(capabilities, dict) and capabilities.get("native_aec")
+        )
+        if requested == "native_aec" and not native_available:
+            raise ValueError(
+                "native_aec representation requires AutoCAD Architecture"
+            )
+        return "native_aec" if native_available else "standard"
+
+    @classmethod
+    def _select_opening_representation(
+        cls, adapter: Any, requested: str, wall: Dict[str, Any]
+    ) -> str:
+        selected = cls._select_representation(adapter, requested)
+        host_is_native = (
+            wall.get("representation") == "native_aec"
+            and str(wall.get("_object_type", "")).upper() == "AECDBWALL"
+        )
+        if selected == "native_aec" and not host_is_native:
+            if requested == "native_aec":
+                raise ValueError(
+                    "native_aec openings require a native AecDbWall host"
+                )
+            return "standard"
+        return selected
 
     @staticmethod
     def _wall_frame(
@@ -667,6 +942,8 @@ class CADTopologyBridge:
         }
         if isinstance(operation.get("geometry"), dict):
             payload["geometry"] = operation["geometry"]
+        if operation.get("representation") in {"native_aec", "standard"}:
+            payload["representation"] = operation["representation"]
         return payload
 
     @staticmethod

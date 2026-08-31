@@ -85,6 +85,7 @@ class TopologyChange(BaseModel):
     label: Optional[str] = None
     targets: Optional[TargetSpec] = None
     geometry: Optional[Dict[str, Any]] = None
+    representation: Literal["auto", "native_aec", "standard"] = "auto"
     cascade: bool = False
 
     @model_validator(mode="after")

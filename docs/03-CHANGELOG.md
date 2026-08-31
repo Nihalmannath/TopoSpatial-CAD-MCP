@@ -9,11 +9,19 @@
 - `manage_topology` for explicit 2D room, wall, door, and window semantics;
   relationship queries; preview/apply transactions; and JSON-LD/Turtle sidecars.
 - `TOPOSPATIAL_TOPOLOGY` XData schema and non-plot `AI-ROOMS` boundaries.
+- Runtime AutoCAD Architecture capability and style discovery.
+- Native `AecDbWall`, `AecDbDoor`, and `AecDbWindow` creation with native
+  opening-to-wall anchors and portable standard-entity fallback.
+- `manage_session` `capabilities` action for product, AEC API, and style details.
 
 ### Changed
 
 - Adapter registry and active adapter context are thread-local so COM objects do
   not cross MCP, dashboard, and topology worker threads.
+- Topology preview resolves and freezes `auto`, `native_aec`, or `standard`
+  representation policy before apply.
+- Session status reconnects on the calling worker and no longer reports a valid
+  base CAD connection as disconnected when optional capability probing fails.
 ### Added
 
 - **Table Entity Support**: Added support for drawing native table entities using the `table` command in `draw_entities` (shorthand alias `tab`).

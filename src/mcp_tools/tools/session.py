@@ -86,10 +86,52 @@ def _status(spec: Dict[str, Any]) -> Dict[str, Any]:
     Returns:
         Dict with keys: success (bool), status (dict mapping cad type to status string).
     """
-    instances = get_cad_instances()
-    if instances:
-        return {"success": True, "status": {k: "connected" for k in instances.keys()}}
-    return {"success": True, "status": {"all": "disconnected"}}
+    # Adapter state is deliberately thread-local because COM proxies cannot be
+    # shared across FastMCP worker apartments.  Resolve the running application
+    # on this worker instead of reporting another worker's cache as disconnected.
+    try:
+        adapter = get_adapter(only_if_running=True)
+        from adapters.adapter_manager import get_active_cad_type
+
+        cad_type = get_active_cad_type()
+        result: Dict[str, Any] = {
+            "success": True,
+            "status": {cad_type: "connected"},
+        }
+        capability_method = getattr(adapter, "get_architecture_capabilities", None)
+        if callable(capability_method):
+            try:
+                result["architecture"] = capability_method(include_styles=False)
+            except Exception as exc:
+                # Capability probing is diagnostic; it must never turn a valid
+                # base CAD connection into a false "disconnected" response.
+                result["architecture"] = {
+                    "native_aec": False,
+                    "warning": str(exc),
+                }
+        return result
+    except Exception:
+        return {"success": True, "status": {"all": "disconnected"}}
+
+
+def _capabilities(spec: Dict[str, Any]) -> Dict[str, Any]:
+    """Return product and native-authoring capabilities for the active CAD."""
+    try:
+        adapter = get_adapter(only_if_running=True)
+        architecture = getattr(adapter, "get_architecture_capabilities", None)
+        result = {
+            "success": True,
+            "cad_type": getattr(adapter, "cad_type", "unknown"),
+            "standard_entities": True,
+            "native_architecture": (
+                architecture(include_styles=bool(spec.get("include_styles", True)))
+                if callable(architecture)
+                else {"native_aec": False, "supported_objects": []}
+            ),
+        }
+        return result
+    except Exception as exc:
+        return {"success": False, "detail": str(exc)}
 
 
 def _list_supported(spec: Dict[str, Any]) -> Dict[str, Any]:
@@ -227,6 +269,7 @@ SESSION_DISPATCH: Dict[str, Tuple[Callable, List[str]]] = {
     "disconnect": (_disconnect, []),
     "status": (_status, []),
     "list_supported": (_list_supported, []),
+    "capabilities": (_capabilities, []),
     "check_running": (_check_running, []),
     "zoom_extents": (_zoom_extents, []),
     "undo": (_undo, []),
@@ -280,6 +323,7 @@ def register_session_tools(mcp):
                 - disconnect:     (no fields) — disconnects from CAD
                 - status:         (no fields) — shows connection status
                 - list_supported: (no fields) — lists available CAD applications
+                - capabilities:   [include_styles] — reports native ACA support and styles
                 - check_running:  (no fields) — checks for running CAD without launching
 
                 View:

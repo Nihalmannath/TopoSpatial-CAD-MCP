@@ -27,6 +27,7 @@ from .mixins import (
     ManipulationMixin,
     BlockMixin,
     ExportMixin,
+    ArchitectureMixin,
     com_session,
     SelectionSetManager,
     com_safe,
@@ -57,6 +58,7 @@ class AutoCADAdapter(
     ManipulationMixin,
     BlockMixin,
     ExportMixin,
+    ArchitectureMixin,
     CADInterface,
 ):
     """Adapter for controlling AutoCAD via COM interface.
