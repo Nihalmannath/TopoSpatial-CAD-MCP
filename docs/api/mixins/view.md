@@ -1,6 +1,7 @@
 # View Mixin
 
-Viewport operations (zoom), undo/redo history, screenshot capture, and view export.
+Viewport operations, undo/redo history, command-based view export, and
+DPI-aware unobscured screenshot capture using the live CAD application HWND.
 
 ::: adapters.mixins.view_mixin.ViewMixin
     options:

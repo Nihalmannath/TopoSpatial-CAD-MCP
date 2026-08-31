@@ -1,6 +1,9 @@
 # MCP Tools
 
-The 7 unified MCP tools exposed to Claude (or any MCP client). Each tool uses a shorthand dispatch format to handle multiple operations in a single call.
+The 8 unified MCP tools exposed to Claude or any MCP client. Drawing, layer,
+entity, block, and file tools accept compact shorthand. `manage_session` accepts
+JSON operations, while `manage_topology` uses explicit structured arguments and
+strict JSON-LD-shaped change documents.
 
 ## draw_entities
 
@@ -56,4 +59,12 @@ The 7 unified MCP tools exposed to Claude (or any MCP client). Each tool uses a 
     options:
       show_source: false
       members: [register_export_tools]
+      filters: ["!^_"]
+
+## manage_topology
+
+::: mcp_tools.tools.topology
+    options:
+      show_source: false
+      members: [register_topology_tools]
       filters: ["!^_"]

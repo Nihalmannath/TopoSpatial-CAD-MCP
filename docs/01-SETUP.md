@@ -5,6 +5,8 @@
 - Python 3.10+
 - Windows OS with COM support
 - CAD application (AutoCAD, ZWCAD, GstarCAD, or BricsCAD)
+- AutoCAD Architecture only when native `AecDbWall`, `AecDbDoor`, and
+  `AecDbWindow` objects are required
 
 ## Installation
  
@@ -25,12 +27,12 @@ For other methods or platforms, see the [official uv installation guide](https:/
 git clone https://github.com/Nihalmannath/TopoSpatial-CAD-MCP.git
 cd TopoSpatial-CAD-MCP
 
-# Install dependencies (creates .venv automatically)
-uv sync --dev
+# Install development dependencies (creates .venv automatically)
+uv sync --extra dev
 uv run python -m pip install --upgrade pywin32
 
 # Verify
-uv run pytest tests/ -v
+uv run pytest -q
 uv run python src/server.py
 ```
 
@@ -41,8 +43,16 @@ TopologicPy backend as well:
 uv sync --extra dev --extra topology
 ```
 
-The server selects `topologic_core` automatically. Restart the MCP client after
-adding the extra so it discovers the `manage_topology` tool.
+This installs the tested pair `topologicpy==0.9.65` and
+`topologic-core==8.0.4`. The server sets
+`TOPOLOGICPY_CORE_BACKEND=topologic_core` before importing TopologicPy. Restart
+the MCP client after adding the extra.
+
+Verify both packages without starting CAD:
+
+```powershell
+uv run --extra topology python -c "import topologicpy, topologic_core; print('Topology OK')"
+```
 
 **Note**: If you get an execution policy error:
 ```powershell
@@ -58,13 +68,37 @@ Add to `%APPDATA%\Claude\claude_desktop_config.json`:
   "mcpServers": {
     "topospatial": {
       "command": "C:\\path\\to\\TopoSpatial-CAD-MCP\\.venv\\Scripts\\python.exe",
-      "args": ["C:\\path\\to\\TopoSpatial-CAD-MCP\\src\\server.py"]
+      "args": ["C:\\path\\to\\TopoSpatial-CAD-MCP\\src\\server.py"],
+      "env": {
+        "PYTHONUTF8": "1"
+      }
     }
   }
 }
 ```
 
-**Important**: Use the full path to `.venv\Scripts\python.exe` created by `uv sync`, not the system `py`.
+**Important**:
+
+1. Use absolute paths and the `.venv\Scripts\python.exe` created by `uv sync`,
+   not the system `py` launcher.
+2. Completely quit and reopen Claude Desktop after changing its configuration.
+3. Start CAD in the same Windows user session and at the same privilege level as
+   Claude Desktop. Open a drawing before the first CAD request.
+4. Check `manage_session` with `status` and `capabilities` before asking for
+   native architectural objects.
+
+The first diagnostic call should pass this JSON string to `operations`:
+
+```json
+[
+  {"action": "status"},
+  {"action": "capabilities", "include_styles": true}
+]
+```
+
+For topology mutations, set `INSUNITS` to millimetres (`4`) in the active DWG.
+Use `manage_topology` for rooms, walls, doors, and windows; `draw_entities`
+creates generic CAD geometry.
 
 ## Project Structure
 
@@ -82,7 +116,7 @@ TopoSpatial-CAD-MCP/
 │   ├── adapters/              # CAD implementations
 │   │   ├── autocad_adapter.py # Composite class (102 lines)
 │   │   ├── adapter_manager.py # AdapterRegistry
-│   │   └── mixins/            # 11 mixin modules
+│   │   └── mixins/            # 12 mixins, including native ACA support
 │   ├── mcp_tools/             # Server infrastructure
 │   │   ├── constants.py       # COLOR_MAP, etc.
 │   │   ├── helpers.py         # Utilities
@@ -101,12 +135,16 @@ TopoSpatial-CAD-MCP/
 ## Key Commands
 
 ```powershell
-uv run pytest tests/ -v                    # Run tests
-uv run mypy src/                           # Type check
-uv run ruff check src/                     # Lint code
-uv run ruff format src/                    # Format code
+uv run pytest -q                            # Run all 228 tests
+uv run ruff check <changed-files>           # Lint files changed in your branch
+uv run ruff format <changed-files>          # Format files changed in your branch
+uv run --extra docs mkdocs build --strict   # Validate documentation
 npx -y @modelcontextprotocol/inspector uv run python src/server.py  # MCP Inspector
 ```
+
+The current repository has pre-existing whole-tree Ruff findings. Do not apply
+an unreviewed global `ruff --fix`; keep new and modified files clean while that
+baseline is reduced separately.
 
 ## Git Workflow
 
@@ -135,10 +173,11 @@ Use the following format: `<type>(<scope>): <subject>`
 1. **Type hints everywhere** - enables IDE autocomplete
 2. **Absolute imports** - `from core import X`, not `from ..core`
 3. **Log operations** - use `logger.info()` and `logger.debug()`
-4. **Test first** - add tests before committing (`uv run pytest tests/ -v`)
-5. **Format & Lint** - run `uv run ruff check src/` and `uv run mypy src/` before push
+4. **Test first** - add tests before committing (`uv run pytest -q`)
+5. **Format & lint changed files** - avoid unrelated whole-tree rewrites
 
 ## Next Steps
 
 - [02-ARCHITECTURE.md](02-ARCHITECTURE.md) - Understand the design and how to extend it
+- [07-NATIVE-ACA-TOPOLOGY.md](07-NATIVE-ACA-TOPOLOGY.md) - Native ACA and safe topology workflow
 - [04-TROUBLESHOOTING.md](04-TROUBLESHOOTING.md) - Debugging guide

@@ -68,6 +68,7 @@ nav:
   - Home: README.md
   - Getting Started: 01-SETUP.md
   - Architecture: 02-ARCHITECTURE.md
+  - Native ACA & Topology: 07-NATIVE-ACA-TOPOLOGY.md
   - Web Dashboard: 06-WEB-DASHBOARD.md
   - API Reference:
       - Overview: api/index.md
@@ -85,6 +86,7 @@ nav:
           - View: api/mixins/view.md
           - Entity: api/mixins/entity.md
           - Utility: api/mixins/utility.md
+          - Architecture: api/mixins/architecture.md
       - MCP Tools: api/tools.md
       - Core: api/core.md
   - Reference: 05-REFERENCE.md

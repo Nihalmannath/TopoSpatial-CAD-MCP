@@ -6,7 +6,7 @@
 
 | Unified Tool | Actions | Category |
 |--------------|---------|----------|
-| `manage_session` | connect, disconnect, status, zoom_extents, undo, redo, screenshot, export_view, check_running, open_dashboard, list_supported | Connection & Control |
+| `manage_session` | connect, disconnect, status, capabilities, zoom_extents, undo, redo, screenshot, export_view, check_running, open_dashboard, list_supported | Connection & Control |
 | `draw_entities` | line, circle, arc, rect, polyline, spline, text, dimension, leader, mleader, table | Drawing |
 | `manage_blocks` | list, info, insert, create, get_attrs, set_attrs | Blocks |
 | `manage_layers` | create, delete, rename, on, off, set_color, is_on, list, info | Layers |
@@ -42,22 +42,33 @@ JSON arrays are also accepted for backwards compatibility.
 
 ## manage_session
 
-Connection lifecycle, view control, and history.
+Connection lifecycle, capability discovery, view control, capture, and history.
+Unlike the shorthand tools, `manage_session.operations` is a JSON object or
+array encoded as a string.
 
+```json
+[
+  {"action": "check_running"},
+  {"action": "status"},
+  {"action": "capabilities", "include_styles": true},
+  {"action": "zoom_extents"},
+  {"action": "screenshot"}
+]
 ```
-connect                          # auto-detect and connect
-disconnect                       # release COM connection
-status                           # current connection status
-check_running                    # detect CAD without launching
-list_supported                   # list available CAD types
-zoom_extents                     # fit view to all entities
-undo                             # undo 1 action
-undo|{"count": 3}                # undo 3 actions (JSON format)
-redo                             # redo 1 action
-screenshot                       # capture window (includes UI chrome)
-export_view                      # render drawing internally (works obscured)
-open_dashboard                   # open web dashboard in browser
-```
+
+Supported actions:
+
+- `connect` / `disconnect`
+- `status`, `check_running`, `list_supported`
+- `capabilities` with optional `include_styles`
+- `zoom_extents`, `screenshot`, `export_view`
+- `undo` / `redo` with optional `count`
+- `open_dashboard` with optional `host` and `port`
+
+`screenshot` captures the full CAD window, including UI chrome, through the
+live application HWND. It works when another application obscures CAD and
+handles high-DPI displays. `export_view` uses the product's command-based image
+export and may not be supported by every CAD/version.
 
 ---
 
@@ -172,8 +183,9 @@ scope=selected, format=excel, filename=selection.xlsx
 
 ## manage_topology
 
-Optional 2D architectural semantics for rooms, straight walls, single-swing
-doors, and windows. Install with `uv sync --extra dev --extra topology`.
+2D architectural semantics for rooms, straight walls, single-swing doors, and
+windows. Install the supported topology backend with
+`uv sync --extra dev --extra topology`.
 Classification is always explicit: untagged closed regions are candidates, not
 semantic rooms.
 
@@ -203,7 +215,9 @@ change document; preview returns an expiring transaction without changing CAD:
           "clear_width": 5000,
           "clear_depth": 4000,
           "wall_thickness": 200,
-          "rotation_deg": 0
+          "rotation_deg": 0,
+          "wall_height": 3000,
+          "wall_style": "Standard"
         }
       }
     ]
@@ -217,6 +231,17 @@ Apply the returned transaction only after reviewing its diff:
 manage_topology(action="apply", payload={"transaction_id": "..."})
 ```
 
+Each create/update change can set:
+
+```text
+representation = auto | native_aec | standard
+```
+
+`auto` selects native ACA walls/openings when possible and otherwise uses
+portable standard entities. `native_aec` makes missing ACA support, styles, or
+native opening hosts a preview error. The resolved representation is included in
+the diff and persisted in XData.
+
 Preview transactions expire after 10 minutes by default and are rejected if the
 drawing revision changes. Preview/apply require the drawing's `INSUNITS` to be
 millimetres. Generated room dimensions describe the clear interior;
@@ -224,6 +249,21 @@ the example above has a 5400 × 4400 mm exterior footprint. `AI-ROOMS` boundarie
 are non-plot. Complete `<drawing>.topology.jsonld` and
 `<drawing>.topology.ttl` sidecars are written to the configured export directory
 after apply or export.
+
+Supported change contracts:
+
+| Class | Required geometry | Optional/default geometry |
+|---|---|---|
+| `top:Room` | `origin`, `clear_width`, `clear_depth` | `wall_thickness=200`, `rotation_deg=0`, `wall_height=3000`, `wall_style=Standard` |
+| `top:Wall` | `start`, `end` | `thickness=200`, `height=3000`, `style=Standard` |
+| `top:Door` | `host_wall_id`, `hinge`, `swing` | `offset=0`, `width=900`, `height=2100`, `style=Standard`, `swing_angle_deg=90` |
+| `top:Window` | `host_wall_id` | `offset=0`, `width=1200`, `height=1200`, `sill_height=900`, `style=Standard` |
+
+`annotate` targets handles, a layer, or a candidate ID. `update` and `delete`
+geometry operations are restricted to MCP-managed objects. Deleting hosted
+objects requires an explicit cascade. See
+[Native AutoCAD Architecture and Topology Workflow](07-NATIVE-ACA-TOPOLOGY.md)
+for a complete room/door/window transaction.
 
 ---
 

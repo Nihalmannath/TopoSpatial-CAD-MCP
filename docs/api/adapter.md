@@ -1,6 +1,8 @@
 # AutoCAD Adapter
 
-The main adapter class composed from 11 specialized mixins. Supports AutoCAD, ZWCAD, GstarCAD, and BricsCAD via the same interface.
+The main adapter class composed from 12 specialized mixins, including native
+AutoCAD Architecture capability discovery and authoring. It supports AutoCAD,
+ZWCAD, GstarCAD, and BricsCAD through the same base interface.
 
 ::: adapters.autocad_adapter
     options:

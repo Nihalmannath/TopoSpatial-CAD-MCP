@@ -112,6 +112,28 @@ def test_apply_annotation_uses_one_undo_group() -> None:
     assert bridge.read_xdata(entity)["managed"] is False
 
 
+def test_apply_can_defer_refresh_until_post_validation() -> None:
+    bridge = CADTopologyBridge()
+    entity = FakeEntity()
+    document = FakeDocument(entity)
+    adapter = FakeAdapter(document)
+
+    bridge.apply_operations(
+        adapter,
+        [
+            {
+                "kind": "annotate_handles",
+                "handles": ["A1"],
+                "semantic_id": "urn:wall:1",
+                "ontology_class": "top:Wall",
+            }
+        ],
+        refresh=False,
+    )
+
+    assert adapter.refreshed is False
+
+
 def test_wall_polygon_respects_centerline_and_thickness() -> None:
     polygon = CADTopologyBridge._wall_polygon([0, 0], [5000, 0], 200)
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
@@ -233,7 +234,12 @@ class CADTopologyBridge:
             entity.SetXData(type_codes, values)
 
     def apply_operations(
-        self, adapter: Any, operations: Sequence[Dict[str, Any]]
+        self,
+        adapter: Any,
+        operations: Sequence[Dict[str, Any]],
+        *,
+        refresh: bool = True,
+        rollback_revision: str | None = None,
     ) -> Dict[str, Any]:
         """Apply a previewed operation list inside one AutoCAD undo mark."""
         document = adapter._get_document("topology_apply")
@@ -255,7 +261,8 @@ class CADTopologyBridge:
                 modified_handles.extend(result.get("modified_handles", []))
             if undo_started:
                 document.EndUndoMark()
-            adapter.refresh_view()
+            if refresh:
+                adapter.refresh_view()
             return {
                 "success": True,
                 "created": created,
@@ -267,11 +274,51 @@ class CADTopologyBridge:
                     document.EndUndoMark()
                 except Exception:
                     pass
-            try:
-                adapter.undo(1)
-            except Exception:
-                logger.exception("Failed to roll back topology transaction")
+            self.rollback_last_transaction(
+                adapter,
+                document=document,
+                expected_revision=rollback_revision,
+            )
             raise
+
+    def rollback_last_transaction(
+        self,
+        adapter: Any,
+        *,
+        document: Any | None = None,
+        expected_revision: str | None = None,
+        timeout_seconds: float = 10.0,
+    ) -> None:
+        """Undo one completed CAD group and wait until rollback is observable."""
+        document = document or adapter._get_document("topology_rollback")
+        try:
+            document.SendCommand("._U\n")
+        except Exception:
+            # Older/testing adapters use a command-style ``undo`` method that
+            # returns ``None`` on success; only an explicit False is failure.
+            if adapter.undo(1) is False:
+                raise RuntimeError("AutoCAD rejected topology rollback")
+
+        deadline = time.monotonic() + timeout_seconds
+        while time.monotonic() < deadline:
+            try:
+                command_active = int(document.GetVariable("CMDACTIVE"))
+            except Exception:
+                command_active = 0
+            if command_active == 0:
+                if expected_revision is None:
+                    return
+                if self.snapshot(adapter, scope="all").revision == expected_revision:
+                    return
+            time.sleep(0.1)
+
+        if expected_revision is not None:
+            actual = self.snapshot(adapter, scope="all").revision
+            raise RuntimeError(
+                "Topology rollback did not restore the preview revision "
+                f"(expected {expected_revision}, got {actual})"
+            )
+        raise RuntimeError("Timed out waiting for AutoCAD topology rollback")
 
     def resolve_operation_representations(
         self,

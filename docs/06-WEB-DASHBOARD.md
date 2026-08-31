@@ -2,7 +2,9 @@
 
 ## Overview
 
-The TopoSpatial-CAD MCP server includes an integrated web dashboard for real-time monitoring and control of CAD applications. The dashboard provides a user-friendly interface for viewing CAD status, managing layers and blocks, and monitoring entities.
+The TopoSpatial-CAD MCP server includes an integrated local dashboard for
+on-demand monitoring and control of CAD applications. It displays connection,
+drawing, layer, block, and entity information from a thread-safe cache.
 
 ## Access
 
@@ -36,9 +38,10 @@ The dashboard provides a real-time monitor of the CAD state. You can manually re
 - Color-coded layer information
 - See locked/unlocked status
 
-**Real-time Updates**
-- Automatically syncs with CAD application
-- Reflects changes made via API or CAD UI
+**Updates**
+- Refreshes after supported MCP operations
+- Can be synchronized on demand with **Refresh Now**
+- Does not run a continuous background COM polling loop
 
 ### 3. Blocks Section
 
@@ -155,12 +158,16 @@ Health check endpoint.
 
 ### Thread Safety
 
-The dashboard runs in a separate thread from the MCP server to avoid blocking CAD operations. Communication between threads is handled through a thread-safe cache:
+The dashboard runs in a separate thread from the MCP server to avoid blocking
+CAD operations. Communication uses a thread-safe cache:
 
-- **MCP Thread**: Owns COM objects, updates cache after operations
-- **Dashboard Thread**: Reads from cache, provides UI
+- **MCP workers**: Resolve thread-local COM proxies and refresh the cache after
+  supported operations
+- **Dashboard requests**: Read the cache; actions that require CAD resolve a
+  separate adapter/COM proxy on that request thread
 
-This design ensures CAD operations remain responsive even during heavy UI activity.
+No application or document COM proxy is passed between the MCP, dashboard, or
+topology analysis threads.
 
 ### Cache System
 
@@ -172,7 +179,7 @@ cache.update(connected=True, cad_type="autocad")  # From MCP thread
 layers = cache.get("layers")  # From dashboard thread
 ```
 
-Cache is automatically populated when:
+Cache is populated when:
 - Server connects to CAD application
 - Manual refresh is triggered
 - MCP tools modify CAD data
@@ -201,7 +208,7 @@ For drawings with 10,000+ entities:
 ### Network Optimization
 
 - All data is served locally (no external requests)
-- WebSocket support not implemented (uses polling via HTTP)
+- WebSocket support is not implemented; the page uses local HTTP requests
 - Cache is regenerated on manual refresh
 
 ## Troubleshooting

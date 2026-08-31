@@ -20,6 +20,7 @@ Auto-generated from source docstrings. All classes and public methods are docume
 | [View](mixins/view.md) | Viewport and undo/redo |
 | [Entity](mixins/entity.md) | Entity property access |
 | [Utility](mixins/utility.md) | Helpers and converters |
+| [Architecture](mixins/architecture.md) | Native ACA capability discovery and wall/opening authoring |
 | [MCP Tools](tools.md) | Tool registration layer |
 | [Core](core.md) | Interfaces, config, exceptions |
 

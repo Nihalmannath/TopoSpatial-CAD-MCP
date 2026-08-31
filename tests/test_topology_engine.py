@@ -393,10 +393,69 @@ def test_relationships_include_host_containment_adjacency_and_connectivity() -> 
         "urn:door:shared",
     ) in triples
     assert (
+        "urn:door:shared",
+        "top:isPartOf",
+        "urn:wall:shared",
+    ) in triples
+    assert (
         "urn:room:left",
         "top:connectsTo",
         "urn:room:right",
     ) in triples
+
+
+def test_jsonld_keeps_host_identifier_and_serializes_opening_relationship() -> None:
+    snapshot = DrawingSnapshot(
+        "hosted.dwg",
+        "",
+        "mm",
+        [
+            _line(
+                "A",
+                (0, 0),
+                (5000, 0),
+                {
+                    "semantic_id": "urn:wall:host",
+                    "ontology_class": "top:Wall",
+                    "managed": True,
+                    "geometry": {
+                        "start": [0, 0],
+                        "end": [5000, 0],
+                        "thickness": 200,
+                    },
+                },
+            ),
+            EntitySnapshot(
+                handle="B",
+                object_type="AecDbDoor",
+                layer="AI-DOORS",
+                geometry={"kind": "point", "position": [1000, 0, 0]},
+                semantic={
+                    "semantic_id": "urn:door:hosted",
+                    "ontology_class": "top:Door",
+                    "managed": True,
+                    "host_wall_id": "urn:wall:host",
+                    "geometry": {
+                        "host_wall_id": "urn:wall:host",
+                        "offset": 1000,
+                        "width": 900,
+                        "hinge": "left",
+                        "swing": "in",
+                    },
+                },
+            ),
+        ],
+    )
+
+    result = TopologyEngine().analyze(snapshot)
+    door = next(
+        node
+        for node in result["graph"]["@graph"]
+        if node["@id"] == "urn:door:hosted"
+    )
+
+    assert door["cad:hostWall"] == "urn:wall:host"
+    assert {item["@id"] for item in door["top:isPartOf"]} == {"urn:wall:host"}
 
 
 def test_analysis_reports_unsupported_geometry_and_ontology_classes() -> None:
@@ -456,6 +515,30 @@ def test_explicit_closed_polyline_annotation_becomes_room_boundary() -> None:
         [0.0, 4000.0],
     ]
     assert node["cad:areaSquareMetres"] == pytest.approx(20.0)
+
+
+def test_managed_clear_room_suppresses_wall_centerline_candidate() -> None:
+    engine = TopologyEngine()
+    explicit = engine._explicit_room_polygons(
+        [
+            {
+                "@id": "urn:room:managed",
+                "@type": "top:Room",
+                "cad:geometry": {
+                    "boundary": [[0, 0], [5000, 0], [5000, 4000], [0, 4000]]
+                },
+            }
+        ]
+    )
+
+    assert engine._duplicates_explicit_room(
+        [[-100, -100], [5100, -100], [5100, 4100], [-100, 4100]],
+        explicit,
+    )
+    assert not engine._duplicates_explicit_room(
+        [[-1000, -1000], [6000, -1000], [6000, 5000], [-1000, 5000]],
+        explicit,
+    )
 
 
 def test_preview_rejects_missing_host_wall_before_mutation() -> None:

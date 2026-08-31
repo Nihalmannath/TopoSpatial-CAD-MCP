@@ -449,10 +449,16 @@ class TopologyEngine:
 
         candidate = _Polygon(boundary)
         for explicit in polygons:
-            union_area = candidate.union(explicit).area
+            smaller_area = min(candidate.area, explicit.area)
+            larger_area = max(candidate.area, explicit.area)
+            overlap = candidate.intersection(explicit).area
+            # Native wall centerlines enclose the clear room plus one wall
+            # thickness. Treat that near-sized enclosing polygon as the same
+            # explicitly managed room, while retaining genuinely larger spaces.
             if (
-                union_area
-                and candidate.intersection(explicit).area / union_area >= 0.95
+                smaller_area
+                and overlap / smaller_area >= 0.95
+                and larger_area / smaller_area <= 1.25
             ):
                 return True
         return False
@@ -489,7 +495,11 @@ class TopologyEngine:
             host = node.get("cad:hostWall")
             if host:
                 relations.add((host, "top:containsElement", semantic_id))
-                relations.add((semantic_id, "cad:hostWall", host))
+                # ``cad:hostWall`` remains the stable scalar host identifier
+                # used by transaction planning.  Express the graph edge with
+                # the ontology predicate instead of overwriting that scalar
+                # with a JSON-LD relationship list during serialization.
+                relations.add((semantic_id, "top:isPartOf", host))
 
         for room_id, room in room_shapes.items():
             for element_id, element in element_shapes.items():

@@ -13,24 +13,55 @@
 - Native `AecDbWall`, `AecDbDoor`, and `AecDbWindow` creation with native
   opening-to-wall anchors and portable standard-entity fallback.
 - `manage_session` `capabilities` action for product, AEC API, and style details.
+- `auto`, `native_aec`, and `standard` representation policies, resolved and
+  frozen during preview.
+- Thread-neutral CAD snapshots and a dedicated topology analysis worker.
+- Tests for native capability discovery, JSON-LD relationships, candidate
+  suppression, deferred refresh, stale previews, rollback, and ACA window
+  discovery.
+- A complete native ACA/topology workflow guide with a tested 5000 × 4000 mm
+  clear-room example.
 
 ### Changed
 
 - Adapter registry and active adapter context are thread-local so COM objects do
   not cross MCP, dashboard, and topology worker threads.
-- Topology preview resolves and freezes `auto`, `native_aec`, or `standard`
-  representation policy before apply.
 - Session status reconnects on the calling worker and no longer reports a valid
   base CAD connection as disconnected when optional capability probing fails.
-### Added
-
-- **Table Entity Support**: Added support for drawing native table entities using the `table` command in `draw_entities` (shorthand alias `tab`).
-- **Bypass path traversal restrictions**: Added `allow_arbitrary_paths` configuration parameter in `output` settings. This allows users to save drawings to any absolute path on their host system, bypassing standard path traversal protection if explicitly enabled.
-- **Selection mapping for tables**: Registered `table` to map to `AcDbTable` in entity selections.
+- Topology apply defers refresh until post-validation, then atomically updates
+  sidecars.
+- Completed transaction reapply is explicitly idempotent.
+- Managed clear-room boundaries suppress duplicate wall-envelope candidates.
+- Opening membership uses `top:isPartOf`; `cad:hostWall` remains a scalar planner
+  identifier.
+- CAD screenshot capture now uses the live COM HWND, supports ACA's MFC window
+  class, renders obscured windows with `PrintWindow`, and handles high-DPI bounds.
+- **Table Entity Support**: Added native table creation through `draw_entities`
+  (`table`, shorthand alias `tab`).
+- **Arbitrary output paths**: Added the opt-in `output.allow_arbitrary_paths`
+  setting; safe configured output paths remain the default.
+- **Selection mapping for tables**: Registered `table` as `AcDbTable`.
 
 ### Fixed
 
-- **Type Checking Warning**: Fixed a type-checking error in `DrawMLeaderRequest` initialization where `text_height` could resolve to `Any | None` instead of a non-nullable `float`.
+- Post-apply JSON-LD serialization failure caused by assigning both a scalar and
+  relation list to `cad:hostWall`.
+- Rollback returning before AutoCAD completed its asynchronous undo command.
+- False room candidates caused by native wall centerline envelopes around an
+  explicitly managed clear-interior room.
+- AutoCAD Architecture screenshots capturing another foreground application or
+  only the upper-left quadrant at 200% display scaling.
+- Type-checking warning in `DrawMLeaderRequest` where `text_height` could resolve
+  to `Any | None` instead of `float`.
+
+### Verified
+
+- Live AutoCAD Architecture smoke test: capability discovery → analyze → preview
+  → native apply → idempotent reapply → query → export → save.
+- Example output: 4 `AecDbWall`, 1 `AecDbDoor`, 2 `AecDbWindow`, one semantic
+  room boundary, 8 XData-tagged objects, 8 graph nodes, 14 relations, and zero
+  duplicate candidates.
+- Full suite: **228 tests passed** on 2026-08-31.
 
 ---
 

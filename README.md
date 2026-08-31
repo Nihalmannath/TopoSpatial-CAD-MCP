@@ -4,7 +4,7 @@
 
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
-[![MCP](https://img.shields.io/badge/MCP-FastMCP%202.0-green)](https://github.com/jlowin/fastmcp)
+[![MCP](https://img.shields.io/badge/MCP-FastMCP%203.1%2B-green)](https://github.com/jlowin/fastmcp)
 [![Author](https://img.shields.io/badge/Author-Nihal%20Ahmed%20Mannath-orange)](https://github.com/Nihalmannath)
 
 ---
@@ -22,6 +22,21 @@ TopoSpatial-CAD MCP constructs a rich spatial knowledge graph:
 > - **Bedroom-01** (20 m² clear interior usable area) contains **Door-03** and **Window-02**.
 > - **Bedroom-01** is **topologically adjacent to Corridor-01**.
 > - **Door-03** connects **Bedroom-01** directly to **Corridor-01**.
+
+### Current implementation status
+
+- **8 unified MCP tools** for session, drawing, layer, entity, block, file,
+  export, and topology workflows.
+- **Native AutoCAD Architecture authoring** for `AecDbWall`, `AecDbDoor`, and
+  `AecDbWindow`, with runtime AEC API/style discovery.
+- **Portable fallback geometry** for ordinary AutoCAD, ZWCAD, GstarCAD, and
+  BricsCAD.
+- **Explicit room/wall/door/window semantics** persisted in
+  `TOPOSPATIAL_TOPOLOGY` XData and exported to JSON-LD and Turtle.
+- **Preview/apply transactions** with a 10-minute default expiry, drawing
+  revision checks, idempotent apply, one AutoCAD undo group, and verified
+  rollback.
+- **228 automated tests passing** on the current Windows development setup.
 
 ```
 ┌────────────────────────────────────────────────────────┐
@@ -92,11 +107,11 @@ When you close AutoCAD, restart your computer, and reopen the project tomorrow, 
 
 ---
 
-### 4. Deterministic 5-Stage Transaction Pipeline (`analyze → query → preview → apply`)
+### 4. Deterministic Transaction Pipeline
 Autonomous agents are never permitted to execute destructive geometry edits directly. All modifications follow a safe, deterministic transaction lifecycle:
 
 ```
-LLM Reasoning ──► Analyze DWG ──► Generate Preview & Diff ──► Validate Rules ──► Apply Transaction
+Analyze DWG ──► Query/Reason ──► Preview & Diff ──► Apply ──► Export/Verify
 ```
 
 **Example Transaction Preview:**
@@ -166,17 +181,18 @@ TopologicPy operates strictly as an on-demand **computational layer**, ensuring 
 
 ## Core Capabilities & Tools
 
-TopoSpatial-CAD MCP provides **8 unified tools** dispatching 56+ CAD commands:
+TopoSpatial-CAD MCP provides **8 unified tools** covering dozens of CAD and
+topology operations:
 
 | Tool | Actions / Scope | Description |
 | :--- | :--- | :--- |
-| **`manage_topology`** | `analyze`, `query`, `preview`, `apply`, `export_ontology` | 2D room/boundary analysis, door/window detection, topological graph reasoning, and JSON-LD / Turtle ontology generation. |
-| **`draw_entities`** | `line`, `circle`, `arc`, `rect`, `pline`, `spline`, `text`, `table` | High-speed parameterized geometric drawing with shorthand parsing support. |
+| **`manage_topology`** | `analyze`, `query`, `preview`, `apply`, `export` | Explicit 2D room/wall/door/window semantics, native ACA authoring, relationship queries, and JSON-LD/Turtle export. |
+| **`draw_entities`** | `line`, `circle`, `arc`, `rectangle`, `polyline`, `spline`, `text`, `dimension`, `leader`, `mleader`, `table` | High-speed parameterized geometric drawing with shorthand aliases such as `rect`. |
 | **`manage_blocks`** | `list`, `info`, `create`, `insert`, `get_attrs`, `set_attrs` | Full block definition, insertion, and dynamic attribute tag read/write. |
-| **`manage_layers`** | `list`, `create`, `delete`, `rename`, `on`, `off`, `lock`, `unlock`, `color` | Layer state management and filtering. |
-| **`manage_entities`** | `select`, `move`, `rotate`, `scale`, `copy`, `paste`, `delete`, `color` | Handle-based entity manipulation and property assignments. |
-| **`manage_files`** | `new`, `open`, `save`, `close`, `list`, `switch` | Multi-drawing tab management and export to DWG / DXF / PDF. |
-| **`manage_session`** | `connect`, `status`, `capabilities`, `zoom_extents`, `undo`, `redo`, `dashboard` | Thread-local connection handling, native ACA/style capability discovery, viewport navigation, and session diagnostics. |
+| **`manage_layers`** | `list`, `info`, `create`, `delete`, `rename`, `turn_on`, `turn_off`, `set_color`, `is_on` | Layer state management and filtering; shorthand `on`/`off` aliases are supported. |
+| **`manage_entities`** | `select`, `move`, `rotate`, `scale`, `set_color`, `set_layer`, `set_color_bylayer`, `copy`, `paste`, `delete` | Handle-based entity manipulation and property assignments. |
+| **`manage_files`** | `new`, `save`, `close`, `list`, `switch` | Multi-drawing tab management and DWG/DXF/PDF save/export. |
+| **`manage_session`** | `connect`, `disconnect`, `status`, `capabilities`, `check_running`, `list_supported`, `zoom_extents`, `screenshot`, `export_view`, `undo`, `redo`, `open_dashboard` | Thread-local connection handling, native ACA/style discovery, viewport control, capture, history, and diagnostics. |
 | **`export_data`** | `json`, `excel` (all / selected entities) | Drawing data extraction with automated Excel multi-sheet reports. |
 
 ---
@@ -186,7 +202,10 @@ TopoSpatial-CAD MCP provides **8 unified tools** dispatching 56+ CAD commands:
 ### Prerequisites
 - **Windows OS** (COM automation)
 - **Python 3.10+**
-- Supported CAD installed: **AutoCAD (2018+)**, **ZWCAD (2020+)**, **GstarCAD (2020+)**, or **BricsCAD (21+)**
+- A running, COM-capable **AutoCAD, AutoCAD Architecture, ZWCAD, GstarCAD, or
+  BricsCAD** installation
+- **AutoCAD Architecture** is required only for native AEC objects; other
+  products use standard entity fallback
 
 ### 1. Quick Install
 
@@ -199,14 +218,17 @@ git clone https://github.com/Nihalmannath/TopoSpatial-CAD-MCP.git
 cd TopoSpatial-CAD-MCP
 
 # Sync dependencies
-uv sync --dev
+uv sync --extra dev
 uv run python -m pip install --upgrade pywin32
 ```
 
-To enable the optional TopologicPy spatial topology engine:
+To enable the optional, pinned TopologicPy spatial topology engine:
 ```powershell
 uv sync --extra dev --extra topology
 ```
+
+This installs `topologicpy==0.9.65` and `topologic-core==8.0.4`. The server
+forces the verified `topologic_core` backend before importing TopologicPy.
 
 ### 2. Claude Desktop Integration
 
@@ -224,7 +246,41 @@ Add to `%APPDATA%\Claude\claude_desktop_config.json`:
 ```
 
 > [!IMPORTANT]
-> Replace `C:\path\to\TopoSpatial-CAD-MCP` with your local repository path, ensuring you point directly to `.venv\Scripts\python.exe`.
+> Replace `C:\path\to\TopoSpatial-CAD-MCP` with your local repository path,
+> point directly to `.venv\Scripts\python.exe`, then completely restart Claude
+> Desktop. Open CAD before asking the client to connect.
+
+### 3. First connection and native ACA check
+
+In an MCP client, call `manage_session` with these operations:
+
+```json
+[
+  {"action": "status"},
+  {"action": "capabilities", "include_styles": true}
+]
+```
+
+For AutoCAD Architecture, confirm that the result contains
+`"native_aec": true` and the expected wall, door, and window styles. Before a
+topology mutation, set the active drawing's `INSUNITS` to millimetres (`4`).
+
+### 4. Recommended agent workflow
+
+1. Run `manage_session` `status` and `capabilities`.
+2. Run `manage_topology(action="analyze")` and keep its SHA-256 revision.
+3. Submit a strict change document to `manage_topology(action="preview")`.
+4. Review the returned diff, warnings, representation, and affected handles.
+5. Apply the returned transaction ID exactly once; repeated apply is safe and
+   returns the stored result.
+6. Query or analyze again, save the DWG, and export JSON-LD/Turtle as needed.
+
+For architectural objects, explicitly tell the agent: **use
+`manage_topology`, not `draw_entities`**. The generic drawing tool intentionally
+creates standard CAD geometry and does not invoke ACA wall/door/window objects.
+
+See [Native ACA and topology workflow](docs/07-NATIVE-ACA-TOPOLOGY.md) for a
+complete 5000 × 4000 mm room example with one door and two windows.
 
 ---
 
@@ -232,11 +288,17 @@ Add to `%APPDATA%\Claude\claude_desktop_config.json`:
 
 ```powershell
 # Run the full test suite
-uv run pytest
+uv run pytest -q
 
-# Type checking
-uv run mypy --config-file mypy.ini src/server.py
+# Check the files changed in your branch
+uv run ruff check <changed-files>
+
+# Build the documentation site
+uv run --extra docs mkdocs build --strict
 ```
+
+The repository contains some pre-existing whole-tree lint debt; use targeted
+Ruff checks for changed files until that baseline is cleaned up.
 
 ---
 
@@ -259,6 +321,15 @@ TopoSpatial-CAD-MCP/
 ├── docs/                      # Complete architecture & setup documentation
 └── mkdocs.yml                 # Documentation site configuration
 ```
+
+## Documentation
+
+- [Installation and MCP client setup](docs/01-SETUP.md)
+- [System architecture](docs/02-ARCHITECTURE.md)
+- [Native ACA and topology workflow](docs/07-NATIVE-ACA-TOPOLOGY.md)
+- [Complete MCP tool reference](docs/05-REFERENCE.md)
+- [Troubleshooting](docs/04-TROUBLESHOOTING.md)
+- [Changelog](docs/03-CHANGELOG.md)
 
 ---
 

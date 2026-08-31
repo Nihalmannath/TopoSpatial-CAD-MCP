@@ -4,15 +4,18 @@ View mixin for AutoCAD adapter.
 Handles view operations (zoom, refresh, undo, redo).
 """
 
-import logging
 import base64
+import ctypes
+import logging
 import os
-import time
 import re
-import win32gui
-import win32con
+import time
 from typing import TYPE_CHECKING, Dict
-from PIL import ImageGrab
+
+import win32con
+import win32gui
+import win32ui
+from PIL import Image, ImageGrab
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +41,8 @@ class ViewMixin:
     def _sanitize_command_input(self, user_input: str) -> str:
         """Sanitize input for SendCommand to prevent command injection.
 
-        Restricts input to safe characters that are common in file paths and CAD commands.
+        Restricts input to safe characters that are common in file paths and CAD
+        commands.
         Non-matching characters are removed.
 
         Args:
@@ -68,7 +72,27 @@ class ViewMixin:
         Raises:
             Exception: If CAD window cannot be found
         """
-        from mcp_tools.constants import CAD_WINDOW_SEARCH_TERMS, AUTOCAD_WINDOW_CLASSES
+        from mcp_tools.constants import (
+            AUTOCAD_WINDOW_CLASSES,
+            CAD_WINDOW_SEARCH_TERMS,
+        )
+
+        # Prefer the HWND exposed by the live COM application.  Product-specific
+        # shells such as AutoCAD Architecture use titles like ``AutoCAD
+        # Architecture 2024`` and versioned MFC classes (for example
+        # ``AfxMDIFrame140u``), so title/class heuristics alone can miss the
+        # correct main window even while the COM connection is healthy.
+        try:
+            application = self._get_application("find_cad_window")
+            application_hwnd = int(getattr(application, "HWND", 0) or 0)
+            if application_hwnd and win32gui.IsWindow(application_hwnd):
+                logger.debug(
+                    "Using CAD application HWND exposed by COM: %s",
+                    application_hwnd,
+                )
+                return application_hwnd
+        except Exception as exc:
+            logger.debug("CAD application HWND lookup unavailable: %s", exc)
 
         search_term = CAD_WINDOW_SEARCH_TERMS.get(self.cad_type, "")
         hwnd = 0
@@ -83,7 +107,11 @@ class ViewMixin:
 
             # Matching: title contains search term AND class is a CAD window class
             title_match = search_term.lower() in title.lower()
+            if self.cad_type == "autocad":
+                title_match = title_match or "autocad" in title.lower()
             class_match = any(p in class_name for p in AUTOCAD_WINDOW_CLASSES)
+            if self.cad_type == "autocad":
+                class_match = class_match or class_name.startswith("AfxMDIFrame")
 
             # Exclude VBA editor and other non-main windows
             if title_match and class_match and "VBA" not in title:
@@ -115,23 +143,38 @@ class ViewMixin:
             # Find the CAD window using strict matching
             hwnd = self._find_cad_window()
 
-            # Bring to front (optional, but good for clean screenshot)
-            # Handle minimized state
-            if win32gui.IsIconic(hwnd):
-                win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
-
+            # Python processes without a manifest are DPI-virtualized by Windows.
+            # At 200% scaling, GetWindowRect would otherwise report half-size
+            # bounds and PrintWindow would capture only the upper-left quadrant.
             try:
-                win32gui.SetForegroundWindow(hwnd)
-            except Exception as e:
-                logger.warning(f"Could not bring window to front: {e}")
+                ctypes.windll.user32.SetProcessDPIAware()
+            except Exception as exc:
+                logger.debug("Could not enable DPI-aware screenshot bounds: %s", exc)
 
             # Get window bounds
             rect = win32gui.GetWindowRect(hwnd)
             x, y, w, h = rect[0], rect[1], rect[2] - rect[0], rect[3] - rect[1]
             logger.debug(f"Capturing screenshot for HWND {hwnd} at {x},{y} {w}x{h}")
 
-            # Capture
-            image = ImageGrab.grab(bbox=(x, y, x + w, y + h), all_screens=True)
+            # PrintWindow renders the requested CAD window even when another app
+            # covers it.  This is important for MCP hosts such as Claude Desktop
+            # and Codex, which commonly remain foreground while requesting the
+            # capture.  Fall back to a screen grab for CAD variants that do not
+            # implement PrintWindow rendering.
+            try:
+                image = self._capture_window(hwnd, w, h)
+            except Exception as exc:
+                logger.warning("PrintWindow capture failed; using screen grab: %s", exc)
+                if win32gui.IsIconic(hwnd):
+                    win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+                try:
+                    win32gui.SetForegroundWindow(hwnd)
+                    time.sleep(0.2)
+                except Exception as focus_exc:
+                    logger.warning("Could not bring window to front: %s", focus_exc)
+                image = ImageGrab.grab(
+                    bbox=(x, y, x + w, y + h), all_screens=True
+                )
 
             # Prepare filename and resolve path using centralized utility
             filename = f"cad_screenshot_{os.getpid()}.png"
@@ -150,6 +193,46 @@ class ViewMixin:
         except Exception as e:
             logger.error(f"Screenshot failed: {e}")
             raise Exception(f"Failed to capture screenshot: {e}")
+
+    @staticmethod
+    def _capture_window(hwnd: int, width: int, height: int) -> Image.Image:
+        """Render one HWND without relying on foreground-window focus."""
+        if width <= 0 or height <= 0:
+            raise ValueError("CAD window has invalid dimensions")
+
+        window_dc_handle = win32gui.GetWindowDC(hwnd)
+        if not window_dc_handle:
+            raise RuntimeError("Could not acquire the CAD window device context")
+        source_dc = win32ui.CreateDCFromHandle(window_dc_handle)
+        memory_dc = source_dc.CreateCompatibleDC()
+        bitmap = win32ui.CreateBitmap()
+        try:
+            bitmap.CreateCompatibleBitmap(source_dc, width, height)
+            memory_dc.SelectObject(bitmap)
+            # PW_RENDERFULLCONTENT (2) asks DWM-backed windows for their complete
+            # client surface instead of copying whatever happens to cover them.
+            rendered = ctypes.windll.user32.PrintWindow(
+                hwnd, memory_dc.GetSafeHdc(), 2
+            )
+            if not rendered:
+                raise RuntimeError("PrintWindow did not render the CAD window")
+            info = bitmap.GetInfo()
+            bits = bitmap.GetBitmapBits(True)
+            return Image.frombuffer(
+                "RGB",
+                (info["bmWidth"], info["bmHeight"]),
+                bits,
+                "raw",
+                "BGRX",
+                0,
+                1,
+            ).copy()
+        finally:
+            if bitmap.GetHandle():
+                win32gui.DeleteObject(bitmap.GetHandle())
+            memory_dc.DeleteDC()
+            source_dc.DeleteDC()
+            win32gui.ReleaseDC(hwnd, window_dc_handle)
 
     def export_view(self) -> Dict[str, str]:
         """Export current view using internal PNGOUT command.

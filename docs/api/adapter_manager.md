@@ -1,6 +1,8 @@
 # Adapter Manager
 
-Singleton registry that manages adapter instances and active CAD type detection.
+Singleton registry that manages active CAD type detection and thread-local
+adapter instances. Application/document COM proxies are not shared between MCP
+or dashboard worker apartments.
 
 ::: adapters.adapter_manager
     options:

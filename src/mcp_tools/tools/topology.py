@@ -137,7 +137,12 @@ def register_topology_tools(mcp: Any) -> None:
                 if current.revision != transaction.base_revision:
                     raise ValueError("The drawing changed after preview; preview again")
 
-                cad_result = _bridge.apply_operations(adapter, transaction.operations)
+                cad_result = _bridge.apply_operations(
+                    adapter,
+                    transaction.operations,
+                    refresh=False,
+                    rollback_revision=current.revision,
+                )
                 try:
                     updated = _bridge.snapshot(adapter, scope="all")
                     analysis = _analyze(updated)
@@ -149,7 +154,9 @@ def register_topology_tools(mcp: Any) -> None:
                     logger.exception(
                         "Topology post-apply validation failed; rolling CAD back"
                     )
-                    adapter.undo(1)
+                    _bridge.rollback_last_transaction(
+                        adapter, expected_revision=current.revision
+                    )
                     adapter.refresh_view()
                     raise
                 result = {
@@ -161,6 +168,7 @@ def register_topology_tools(mcp: Any) -> None:
                     "relation_count": analysis["relation_count"],
                 }
                 _transactions.mark_applied(transaction_id, result)
+                adapter.refresh_view()
                 return _json(
                     {
                         "success": True,
