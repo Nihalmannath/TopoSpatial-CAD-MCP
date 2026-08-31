@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "topospatial-cad": {
+      "command": "c:\\Users\\LENOVO\\Desktop\\multiCAD-mcp\\.venv\\Scripts\\python.exe",
+      "args": [
+        "c:\\Users\\LENOVO\\Desktop\\multiCAD-mcp\\src\\server.py"
+      ],
+      "env": {
+        "PYTHONPATH": "c:\\Users\\LENOVO\\Desktop\\multiCAD-mcp\\src"
+      }
+    }
+  }
+}
