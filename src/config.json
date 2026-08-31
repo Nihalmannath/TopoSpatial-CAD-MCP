@@ -5,7 +5,8 @@
     "autocad": {
       "type": "AUTOCAD",
       "prog_id": "AutoCAD.Application",
-      "startup_wait_time": 20.0
+      "startup_wait_time": 20.0,
+      "com_clsid": "{8B4929F8-076F-4AEC-AFEE-8928747B7AE3}"
     },
     "zwcad": {
       "type": "ZWCAD",

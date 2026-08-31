@@ -127,7 +127,9 @@ class AdapterRegistry:
         """Internal auto-detection logic within the locked context."""
         from adapters import AutoCADAdapter
 
-        cad_priorities = ["zwcad", "autocad", "bricscad", "gcad"]
+        # Prefer AutoCAD. Trying an uninstalled CAD first adds delays and can
+        # obscure the useful AutoCAD connection error in MCP clients.
+        cad_priorities = ["autocad", "zwcad", "bricscad", "gcad"]
 
         for ct in cad_priorities:
             try:

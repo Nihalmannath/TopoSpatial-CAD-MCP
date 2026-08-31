@@ -18,6 +18,7 @@ class CADConfig:
     type: str  # AUTOCAD, ZWCAD, GCAD or BRICSCAD
     prog_id: str  # COM ProgID for Windows
     startup_wait_time: float  # Seconds to wait for CAD to start
+    com_clsid: Optional[str] = None  # Optional registry-independent COM class ID
 
 
 @dataclass
@@ -130,6 +131,7 @@ class ConfigManager:
                     type="AUTOCAD",
                     prog_id="AutoCAD.Application",
                     startup_wait_time=20.0,
+                    com_clsid="{8B4929F8-076F-4AEC-AFEE-8928747B7AE3}",
                 ),
                 "zwcad": CADConfig(
                     type="ZWCAD",
@@ -172,6 +174,7 @@ class ConfigManager:
                     type=cad_dict.get("type", cad_name.upper()),
                     prog_id=cad_dict.get("prog_id", ""),
                     startup_wait_time=float(cad_dict.get("startup_wait_time", 20.0)),
+                    com_clsid=cad_dict.get("com_clsid"),
                 )
 
             # Parse output config

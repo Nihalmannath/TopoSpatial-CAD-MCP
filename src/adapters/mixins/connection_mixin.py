@@ -37,6 +37,34 @@ class ConnectionMixin:
             self, condition: Any, timeout: float = 20.0, interval: float = 0.1
         ) -> bool: ...
 
+    def _get_active_com_object(self) -> Any:
+        """Attach to the running CAD instance without requiring ProgID lookup.
+
+        Packaged desktop clients can launch the MCP child with a registry view
+        in which ``CLSIDFromProgID`` fails even though the CAD object is present
+        in the Running Object Table.  An explicitly configured CLSID bypasses
+        that lookup while preserving the normal ProgID path everywhere else.
+        """
+        try:
+            return win32com.client.GetActiveObject(self.config.prog_id)
+        except Exception as prog_id_error:
+            com_clsid = getattr(self.config, "com_clsid", None)
+            if not com_clsid:
+                raise
+
+            try:
+                clsid = pywintypes.IID(com_clsid)
+                unknown = pythoncom.GetActiveObject(clsid)
+                dispatch = unknown.QueryInterface(pythoncom.IID_IDispatch)
+                application = win32com.client.Dispatch(dispatch)
+                logger.info(
+                    "%s instance found (active via configured CLSID)",
+                    self.cad_type,
+                )
+                return application
+            except Exception as clsid_error:
+                raise clsid_error from prog_id_error
+
     def connect(self, only_if_running: bool = False) -> bool:
         """Connect to the CAD application via COM, initializing COM for this thread.
 
@@ -69,9 +97,7 @@ class ConnectionMixin:
             max_retries = 3
             for attempt in range(max_retries):
                 try:
-                    self.application = win32com.client.GetActiveObject(
-                        self.config.prog_id
-                    )
+                    self.application = self._get_active_com_object()
                     logger.info(
                         f"{self.cad_type} instance found (active via GetActiveObject)"
                     )
@@ -97,7 +123,8 @@ class ConnectionMixin:
 
                 logger.info(f"{self.cad_type} not running, starting new instance...")
                 try:
-                    self.application = win32com.client.Dispatch(self.config.prog_id)
+                    dispatch_id = getattr(self.config, "com_clsid", None) or self.config.prog_id
+                    self.application = win32com.client.Dispatch(dispatch_id)
                 except pywintypes.com_error as com_err:
                     error_code = com_err.args[0] if com_err.args else None
                     if error_code == -2147221005:
