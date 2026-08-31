@@ -1,0 +1,49 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+.uv-python/
+venv/
+ENV/
+
+# Testing & Quality caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+coverage_report.txt
+
+# Temporary / Scratch test scripts
+test_*.png
+test_*.txt
+verify_*.py
+debug_*.py
+dxf_dump.txt
+scratch/
+
+# Logging
+logs/
+*.log
+
+# Local secrets and config overrides
+config.local.json
+.env
+.env.local
+
+# Operating System & IDE files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# MkDocs generated site
+site/

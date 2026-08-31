@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TopoSpatial-CAD</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+
+<body>
+    <div class="app">
+
+        <!-- Sidebar -->
+        <nav class="sidebar">
+            <div class="sidebar-brand">
+                <span class="brand-mark">⌗</span>
+                <span class="brand-name">TopoSpatial-CAD</span>
+            </div>
+            <ul class="nav-list">
+                <li class="nav-item active" data-panel="overview">
+                    <span class="nav-icon">◎</span>
+                    <span class="nav-label">Resumen</span>
+                </li>
+                <li class="nav-item" data-panel="entities">
+                    <span class="nav-icon">◇</span>
+                    <span class="nav-label">Entidades</span>
+                </li>
+                <li class="nav-item" data-panel="layers">
+                    <span class="nav-icon">☰</span>
+                    <span class="nav-label">Capas</span>
+                </li>
+                <li class="nav-item" data-panel="blocks">
+                    <span class="nav-icon">⊞</span>
+                    <span class="nav-label">Bloques</span>
+                </li>
+                <li class="nav-item" data-panel="logs">
+                    <span class="nav-icon">≡</span>
+                    <span class="nav-label">Consola</span>
+                </li>
+            </ul>
+            <div class="sidebar-status">
+                <div class="status-dot" id="status-dot"></div>
+                <span id="status-text">Desconectado</span>
+            </div>
+        </nav>
+
+        <!-- Main -->
+        <div class="main">
+
+            <!-- Topbar -->
+            <header class="topbar">
+                <div class="topbar-left">
+                    <span class="panel-title" id="panel-title">Resumen</span>
+                    <span class="topbar-sep">·</span>
+                    <select class="drawing-selector" id="drawing-selector" disabled>
+                        <option value="">Sin conexión</option>
+                    </select>
+                </div>
+                <div class="topbar-right">
+                    <button class="btn-refresh" id="export-all">
+                        <span class="refresh-icon">⇅</span>
+                        Exportar
+                    </button>
+                    <button class="btn-refresh" id="refresh-all">
+                        <span class="refresh-icon">↻</span>
+                        Refrescar
+                    </button>
+                </div>
+            </header>
+
+            <!-- Panels -->
+            <div class="panels">
+
+                <!-- Overview -->
+                <div class="panel active" id="panel-overview">
+                    <div class="stats-bar">
+                        <div class="stat">
+                            <div class="stat-label">Aplicación CAD</div>
+                            <div class="stat-value" id="cad-type-display">—</div>
+                        </div>
+                        <div class="stat stat-wide">
+                            <div class="stat-label">Dibujo activo</div>
+                            <div class="stat-value" id="header-drawing">Sin conexión</div>
+                        </div>
+                        <div class="stat stat-num">
+                            <div class="stat-label">Entidades</div>
+                            <div class="stat-value accent" id="entities-count">0</div>
+                        </div>
+                        <div class="stat stat-num">
+                            <div class="stat-label">Capas</div>
+                            <div class="stat-value accent" id="layers-count">0</div>
+                        </div>
+                        <div class="stat stat-num">
+                            <div class="stat-label">Bloques</div>
+                            <div class="stat-value accent" id="blocks-count">0</div>
+                        </div>
+                    </div>
+                    <div class="overview-grid">
+                        <div class="overview-col">
+                            <div class="col-header">Entidades por tipo</div>
+                            <div class="col-body" id="overview-entities"></div>
+                        </div>
+                        <div class="overview-col">
+                            <div class="col-header">Capas</div>
+                            <div class="col-body" id="overview-layers"></div>
+                        </div>
+                        <div class="overview-col">
+                            <div class="col-header">Bloques</div>
+                            <div class="col-body" id="overview-blocks"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Entities -->
+                <div class="panel" id="panel-entities">
+                    <div class="panel-toolbar">
+                        <input type="text" class="search-input" id="filter-entities" placeholder="Buscar entidad...">
+                        <select class="select-input" id="filter-entities-layer">
+                            <option value="">Todas las capas</option>
+                        </select>
+                        <div class="toolbar-gap"></div>
+                        <button class="btn-sm" id="expand-all-entities">↕ Expandir</button>
+                        <button class="btn-sm" id="collapse-all-entities">↕ Colapsar</button>
+                        <span class="count-pill" id="entities-panel-count"></span>
+                    </div>
+                    <div class="panel-body">
+                        <div id="entities-container" class="accordion-list">
+                            <div class="empty-state">Sin entidades disponibles</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Layers -->
+                <div class="panel" id="panel-layers">
+                    <div class="panel-toolbar">
+                        <input type="text" class="search-input" id="filter-layers" placeholder="Filtrar capas...">
+                        <div class="toolbar-gap"></div>
+                        <span class="count-pill" id="layers-panel-count"></span>
+                    </div>
+                    <div class="panel-body">
+                        <div id="layers-container">
+                            <div class="empty-state">Sin capas disponibles</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Blocks -->
+                <div class="panel" id="panel-blocks">
+                    <div class="panel-toolbar">
+                        <input type="text" class="search-input" id="filter-blocks" placeholder="Buscar bloques...">
+                        <div class="toolbar-gap"></div>
+                        <button class="btn-sm" id="expand-all-blocks">↕ Expandir</button>
+                        <button class="btn-sm" id="collapse-all-blocks">↕ Colapsar</button>
+                        <span class="count-pill" id="blocks-panel-count"></span>
+                    </div>
+                    <div class="panel-body">
+                        <div id="blocks-container" class="accordion-list">
+                            <div class="empty-state">Sin bloques disponibles</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Logs -->
+                <div class="panel" id="panel-logs">
+                    <div class="panel-body">
+                        <div id="console-output" class="console">
+                            <div class="log-entry system">[SISTEMA] Dashboard iniciado.</div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+
+    <div id="message-box" class="toast"></div>
+    <script src="/static/aci_colors.js"></script>
+    <script src="/static/script.js"></script>
+</body>
+
+</html>

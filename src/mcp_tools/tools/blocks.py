@@ -1,0 +1,389 @@
+"""
+Unified block management tool.
+
+Single manage_blocks tool replaces all 7 legacy block tools with
+a simple shorthand format for ~85% token reduction.
+
+SHORTHAND FORMAT (one per line):
+    list                                          → list
+    info|block_name|include                       → info|Door|both
+    insert|name|point|scale|rotation|layer|color  → insert|Door|10,20|1.5|90|walls|red
+    create|name|handles|point|description         → create|MyBlock|A1,B2|0,0|Desc
+    get_attrs|handle                              → get_attrs|A1B2C3
+    set_attrs|handle|attributes_json              → set_attrs|A1B2C3|{"TAG": "value"}
+"""
+
+import json
+import logging
+from typing import Optional, Dict, Any, Callable, List, Tuple
+
+
+from mcp_tools.decorators import cad_tool, get_current_adapter
+from mcp_tools.helpers import parse_coordinate
+from mcp_tools.shorthand import parse_block_ops_input
+
+logger = logging.getLogger(__name__)
+
+
+# ========== Action Handlers ==========
+
+
+def _create(spec: Dict[str, Any]) -> Dict[str, Any]:
+    """Create a block from entity handles or the current selection.
+
+    Args:
+        spec: Operation spec with keys: block_name (str), entity_handles (list, optional),
+            insertion_point (str, optional), description (str, optional).
+
+    Returns:
+        Dict with keys: success (bool) and block creation details.
+    """
+    adapter = get_current_adapter()
+    block_name = spec["block_name"]
+    insert_pt = parse_coordinate(spec.get("insertion_point", "0,0,0"))
+    description = spec.get("description", "")
+
+    entity_handles = spec.get("entity_handles")
+    if entity_handles is not None:
+        if isinstance(entity_handles, str):
+            entity_handles = json.loads(entity_handles)
+        if not isinstance(entity_handles, list):
+            entity_handles = [entity_handles]
+        entity_handles = [str(h) for h in entity_handles]
+
+        result = adapter.create_block_from_entities(
+            block_name=block_name,
+            entity_handles=entity_handles,
+            insertion_point=insert_pt,
+            description=description,
+        )
+    else:
+        result = adapter.create_block_from_selection(
+            block_name=block_name,
+            insertion_point=insert_pt,
+            description=description,
+        )
+
+    return result
+
+
+def _insert(spec: Dict[str, Any]) -> Dict[str, Any]:
+    """Insert a block reference at a given point.
+
+    Args:
+        spec: Operation spec with keys: block_name (str), insertion_point (str),
+            scale (float, optional), rotation (float, optional),
+            layer (str, optional), color (str, optional), attributes (dict, optional).
+
+    Returns:
+        Dict with keys: success (bool), handle (str), block_name (str),
+            insertion_point (str), scale (float), rotation (float), layer (str).
+    """
+    adapter = get_current_adapter()
+    block_name = spec["block_name"]
+    point = parse_coordinate(spec["insertion_point"])
+    scale = spec.get("scale", 1.0)
+    rotation = spec.get("rotation", 0.0)
+    layer = spec.get("layer", "0")
+    color = spec.get("color", "white")
+    attributes = spec.get("attributes")
+
+    # Parse attributes if passed as JSON string
+    if isinstance(attributes, str):
+        try:
+            attributes = json.loads(attributes)
+        except json.JSONDecodeError:
+            attributes = None
+
+    handle = adapter.insert_block(
+        block_name=block_name,
+        insertion_point=point,
+        scale_x=scale,
+        scale_y=scale,
+        scale_z=scale,
+        rotation=rotation,
+        layer=layer,
+        color=color,
+        attributes=attributes,
+        _skip_refresh=True,
+    )
+
+    return {
+        "success": True,
+        "handle": handle,
+        "block_name": block_name,
+        "insertion_point": spec["insertion_point"],
+        "scale": scale,
+        "rotation": rotation,
+        "layer": layer,
+    }
+
+
+def _list(spec: Dict[str, Any]) -> Dict[str, Any]:
+    """List all block definitions in the drawing.
+
+    Args:
+        spec: Operation spec (no required keys).
+
+    Returns:
+        Dict with keys: success (bool), count (int), blocks (list).
+    """
+    adapter = get_current_adapter()
+    blocks = adapter.list_blocks()
+    result = {"success": True, "count": len(blocks), "blocks": blocks}
+
+    if blocks:
+        result["_meta"] = {
+            "ui": {
+                "resourceUri": "ui://topospatial/block_browser",
+                "data": {"blocks": blocks},
+            }
+        }
+
+    return result
+
+
+def _info(spec: Dict[str, Any]) -> Dict[str, Any]:
+    """Return info and/or references for a block definition.
+
+    Args:
+        spec: Operation spec with keys: block_name (str),
+            include (str, optional): 'info', 'references', or 'both'.
+
+    Returns:
+        Dict with keys: success (bool), block_name (str), and optionally
+            info (dict) and/or references (list), reference_count (int).
+    """
+    adapter = get_current_adapter()
+    block_name = spec["block_name"]
+    include = spec.get("include", "info").lower()
+
+    result: Dict[str, Any] = {"success": True, "block_name": block_name}
+
+    if include in ("info", "both"):
+        result["info"] = adapter.get_block_info(block_name)
+
+    if include in ("references", "both"):
+        refs = adapter.get_block_references(block_name)
+        result["references"] = refs
+        result["reference_count"] = len(refs)
+
+    if include not in ("info", "references", "both"):
+        return {
+            "success": False,
+            "error": f"Unknown include '{include}'. Use: info, references, both",
+        }
+
+    return result
+
+
+def _get_attrs(spec: Dict[str, Any]) -> Dict[str, Any]:
+    """Get attribute values from a block reference.
+
+    Args:
+        spec: Operation spec with keys: handle (str).
+
+    Returns:
+        Dict with keys: success (bool), handle (str), attribute_count (int), attributes (dict).
+    """
+    adapter = get_current_adapter()
+    handle = spec["handle"]
+    attributes = adapter.get_block_attributes(handle)
+    return {
+        "success": True,
+        "handle": handle,
+        "attribute_count": len(attributes),
+        "attributes": attributes,
+    }
+
+
+def _set_attrs(spec: Dict[str, Any]) -> Dict[str, Any]:
+    """Set attribute values on a block reference.
+
+    Args:
+        spec: Operation spec with keys: handle (str), attributes (dict or JSON str).
+
+    Returns:
+        Dict with keys: success (bool), handle (str), attributes_set (list).
+    """
+    adapter = get_current_adapter()
+    handle = spec["handle"]
+    attrs_raw = spec["attributes"]
+
+    if isinstance(attrs_raw, str):
+        try:
+            attrs_data = json.loads(attrs_raw)
+        except json.JSONDecodeError as e:
+            return {"success": False, "error": f"Invalid JSON for attributes: {e}"}
+    else:
+        attrs_data = attrs_raw
+
+    success = adapter.set_block_attributes(handle, attrs_data)
+    return {
+        "success": success,
+        "handle": handle,
+        "attributes_set": list(attrs_data.keys()) if success else [],
+    }
+
+
+# Dispatch table: action -> (handler, required_fields)
+BLOCK_DISPATCH: Dict[str, Tuple[Callable, List[str]]] = {
+    "create": (_create, ["block_name"]),
+    "insert": (_insert, ["block_name", "insertion_point"]),
+    "list": (_list, []),
+    "info": (_info, ["block_name"]),
+    "get_attrs": (_get_attrs, ["handle"]),
+    "set_attrs": (_set_attrs, ["handle", "attributes"]),
+}
+
+
+def _validate_required_fields(
+    spec: Dict[str, Any], required: List[str], action: str
+) -> Optional[str]:
+    """Validate that required fields are present in spec.
+
+    Args:
+        spec: Operation spec dict to validate.
+        required: List of field names that must be present.
+        action: Action name used in the error message.
+
+    Returns:
+        Error message string if any fields are missing, otherwise None.
+    """
+    missing = [f for f in required if f not in spec]
+    if missing:
+        return f"'{action}' requires fields: {', '.join(missing)}"
+    return None
+
+
+# ========== Tool Registration ==========
+
+
+def register_block_tools(mcp) -> None:
+    """Register unified block management tool with FastMCP."""
+
+    @cad_tool(mcp, "manage_blocks")
+    def manage_blocks(
+        operations: str,
+    ) -> str:
+        """
+        Manage blocks: create, insert, list, query, and manage attributes.
+
+        Args:
+            operations: Operations in SHORTHAND format (one per line):
+
+                list                                          → list
+                info|block_name|include                       → info|Door|both
+                insert|name|point|scale|rotation|layer|color  → insert|Door|10,20|1.5|90|walls|red
+                create|name|handles|point|description         → create|MyBlock|A1,B2|0,0|Desc
+                get_attrs|handle                              → get_attrs|A1B2C3
+                set_attrs|handle|attributes_json              → set_attrs|A1B2C3|{"TAG": "value"}
+
+                "include" = "info" (default), "references", or "both"
+                "handles" = comma-separated entity handles
+                "attributes_json" = JSON object with attribute tag -> value pairs
+
+                DEFAULTS: scale=1.0, rotation=0, layer=0, color=white, include=info
+
+                Examples:
+                    list
+                    info|Door|both
+                    insert|Door|10,20|1.5|90
+                    insert|Door|30,20|1.0|0|walls|blue
+                    get_attrs|A1B2C3
+                    set_attrs|A1B2C3|{"INTENSIDAD": "25A", "POLOS": "4P"}
+
+                JSON format also supported for backwards compatibility.
+
+        Returns:
+            JSON result with per-operation status
+        """
+        try:
+            ops_data = parse_block_ops_input(operations)
+        except Exception as e:
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": f"Invalid input: {str(e)}",
+                    "total": 0,
+                    "succeeded": 0,
+                    "results": [],
+                },
+                indent=2,
+            )
+
+        adapter = get_current_adapter()
+        results = []
+        has_mutations = False
+
+        for i, spec in enumerate(ops_data):
+            action = spec.get("action")
+
+            if not action:
+                results.append(
+                    {
+                        "index": i,
+                        "success": False,
+                        "error": "Missing 'action' field. Supported: "
+                        + ", ".join(BLOCK_DISPATCH.keys()),
+                    }
+                )
+                continue
+
+            action_lower = action.lower()
+            dispatch_entry = BLOCK_DISPATCH.get(action_lower)
+
+            if not dispatch_entry:
+                results.append(
+                    {
+                        "index": i,
+                        "action": action_lower,
+                        "success": False,
+                        "error": f"Unknown action '{action}'. Supported: "
+                        + ", ".join(BLOCK_DISPATCH.keys()),
+                    }
+                )
+                continue
+
+            handler, required_fields = dispatch_entry
+
+            field_error = _validate_required_fields(spec, required_fields, action_lower)
+            if field_error:
+                results.append(
+                    {
+                        "index": i,
+                        "action": action_lower,
+                        "success": False,
+                        "error": field_error,
+                    }
+                )
+                continue
+
+            try:
+                result = handler(spec)
+                results.append({"index": i, "action": action_lower, **result})
+                if action_lower in ("create", "insert"):
+                    has_mutations = True
+            except Exception as e:
+                logger.error(f"Error in block op {i} ({action_lower}): {e}")
+                results.append(
+                    {
+                        "index": i,
+                        "action": action_lower,
+                        "success": False,
+                        "error": str(e),
+                    }
+                )
+
+        # Single refresh only if mutations occurred
+        if has_mutations and any(r.get("success") for r in results):
+            adapter.refresh_view()
+
+        return json.dumps(
+            {
+                "total": len(ops_data),
+                "succeeded": sum(1 for r in results if r.get("success")),
+                "results": results,
+            },
+            indent=2,
+        )

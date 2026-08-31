@@ -1,0 +1,154 @@
+[build-system]
+requires = ["setuptools>=65.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "topospatial-cad-mcp"
+version = "0.2.0"
+description = "TopoSpatial-CAD MCP: Spatial Topology & Semantic Architectural CAD Intelligence MCP Server"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+authors = [
+    {name = "Nihal Ahmed Mannath", email = "nihalmannat@gmail.com"}
+]
+keywords = ["CAD", "AutoCAD", "ZWCAD", "MCP", "Windows", "COM", "Architecture", "Topology", "BIM", "Ontology", "TopoSpatial"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Natural Language :: English",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
+
+dependencies = [
+    "fastmcp>=3.1.0",
+    "mcp>=1.24.0",
+    "pywin32>=300",
+    "openpyxl>=3.1.0",
+    "pillow>=10.0.0",
+    "fastapi>=0.100.0",
+    "uvicorn>=0.20.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "typing-extensions>=4.5.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "pytest-asyncio>=0.20.0",
+    "mypy>=1.0.0",
+    "ruff>=0.1.0",
+    "interrogate>=1.7.0",
+]
+docs = [
+    "mkdocs-material>=9.5.0",
+    "mkdocstrings[python]>=0.25.0",
+]
+topology = [
+    "topologicpy==0.9.65",
+    "topologic-core==8.0.4",
+]
+
+[project.urls]
+Homepage = "https://github.com/Nihalmannath/TopoSpatial-CAD-MCP"
+Documentation = "https://github.com/Nihalmannath/TopoSpatial-CAD-MCP/blob/main/README.md"
+Repository = "https://github.com/Nihalmannath/TopoSpatial-CAD-MCP.git"
+"Bug Tracker" = "https://github.com/Nihalmannath/TopoSpatial-CAD-MCP/issues"
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+norecursedirs = ["manual"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "--strict-markers -v"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+]
+
+[tool.coverage.run]
+source = ["src"]
+omit = [
+    "*/tests/*",
+    "*/__init__.py",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "if sys.platform",
+]
+
+[tool.interrogate]
+fail-under = 80
+ignore-init-method = true
+ignore-module = true
+ignore-magic = true
+ignore-nested-classes = false
+ignore-private = true
+ignore-property-decorators = true
+exclude = ["src/__version__.py", "src/z_legacy"]
+verbose = 1
+quiet = false
+whitelist-regex = []
+color = true
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "F",     # pyflakes
+    "I",     # isort
+    "N",     # pep8-naming
+    "D",     # pydocstyle
+]
+ignore = [
+    "D203",  # 1 blank line required before class docstring
+    "D212",  # Multi-line docstring summary should start at the first line
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+[dependency-groups]
+docs = [
+    "backrefs>=6.2",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
+"tests/**" = ["D100", "D101", "D102", "D103"]
