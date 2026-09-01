@@ -34,7 +34,7 @@ SHORTHAND FORMAT (one per line):
 
 import json
 import logging
-from typing import Optional, Dict, Any, Callable, List, Tuple
+from typing import Optional, Dict, Any, Callable, List, Tuple, Union
 
 
 from pydantic import ValidationError
@@ -501,7 +501,7 @@ def register_drawing_tools(mcp):
 
     @cad_tool(mcp, "draw_entities")
     def draw_entities(
-        entities: str,
+        entities: Union[str, Dict[str, Any], List[Dict[str, Any]]],
     ) -> str:
         """
         Draw multiple entities of any type in a single operation.

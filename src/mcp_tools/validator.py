@@ -134,7 +134,7 @@ def coerce_number(value: Any, field_name: str = "") -> Union[int, float, Any]:
     return value
 
 
-def coerce_bool(value: Any) -> bool:
+def coerce_bool(value: Any) -> Any:
     """
     Convert various boolean representations to bool.
 
@@ -148,12 +148,21 @@ def coerce_bool(value: Any) -> bool:
         return value
 
     if isinstance(value, str):
-        return value.lower() in ("true", "1", "yes", "on", "closed")
+        normalized = value.strip().lower()
+        if normalized in ("true", "1", "yes", "on", "closed"):
+            return True
+        if normalized in ("false", "0", "no", "off", "open", ""):
+            return False
+        return value
 
     if isinstance(value, (int, float)):
-        return bool(value)
+        if value in (0, 1):
+            return bool(value)
+        return value
 
-    return False
+    # Preserve invalid structured values so downstream typed validation reports
+    # the schema error. In particular, an empty object must never become False.
+    return value
 
 
 # ========== Coordinate Normalization ==========
@@ -212,7 +221,7 @@ NUMERIC_FIELDS = {
 COLOR_FIELDS = {"color"}
 
 # Fields that should be booleans
-BOOL_FIELDS = {"closed", "save_changes"}
+BOOL_FIELDS = {"closed", "save_changes", "confirm", "include_sidecars"}
 
 # Fields that are coordinates
 COORDINATE_FIELDS = {

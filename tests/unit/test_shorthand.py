@@ -192,6 +192,17 @@ rect|0,0|20,15"""
         assert len(result) == 1
         assert result[0]["type"] == "circle"
 
+    def test_native_structured_array_does_not_require_json_string(self):
+        result = parse_drawing_input(
+            [{"type": "line", "start": [0, 0], "end": [10, 10]}]
+        )
+
+        assert result == [{"type": "line", "start": "0,0", "end": "10,10"}]
+
+    def test_native_array_rejects_non_object_items(self):
+        with pytest.raises(TypeError, match="contain objects"):
+            parse_drawing_input(["line|0,0|10,10"])
+
     def test_empty_lines_ignored(self):
         """Test empty lines are ignored."""
         input_str = """line|0,0|10,10
@@ -493,6 +504,22 @@ class TestFileOpShorthand:
         result = parse_file_op_shorthand("switch|floor_plan.dwg")
         assert result["action"] == "switch"
         assert result["drawing_name"] == "floor_plan.dwg"
+
+    def test_delete_requires_explicit_confirmation_value(self):
+        """Parse a recoverable drawing deletion request."""
+        result = parse_file_op_shorthand("delete|old_plan.dwg|true|true")
+        assert result == {
+            "action": "delete",
+            "target": "old_plan.dwg",
+            "confirm": True,
+            "include_sidecars": True,
+        }
+
+    def test_delete_defaults_to_unconfirmed(self):
+        """Omitted destructive flags remain safely disabled."""
+        result = parse_file_op_shorthand("delete|old_plan.dwg")
+        assert result["confirm"] is False
+        assert result["include_sidecars"] is False
 
 
 # ========== Edge Cases ==========

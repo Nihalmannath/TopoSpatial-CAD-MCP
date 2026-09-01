@@ -1,7 +1,7 @@
 """
 Unified file management tool.
 
-Replaces 5 individual tools with 1 using a simple shorthand format
+Combines drawing file workflows in one tool using a simple shorthand format
 for ~85% token reduction.
 
 SHORTHAND FORMAT (one per line):
@@ -11,12 +11,13 @@ SHORTHAND FORMAT (one per line):
     close|save_changes            → close|true
     list                          → list
     switch|drawing_name           → switch|floor_plan.dwg
+    delete|target|confirm|sidecars → delete|old_plan.dwg|true|false
 """
 
 import json
 import logging
 import os
-from typing import Optional, Dict, Any, Callable, List, Tuple
+from typing import Optional, Dict, Any, Callable, List, Tuple, Union
 
 
 from core import get_config
@@ -48,12 +49,19 @@ def _save(spec: Dict[str, Any]) -> Dict[str, Any]:
     )
 
     if success:
-        if filepath:
-            saved_path = filepath
-        elif filename:
-            config = get_config()
-            output_dir = os.path.abspath(os.path.expanduser(config.output.directory))
-            saved_path = os.path.join(output_dir, filename)
+        config = get_config()
+        output_dir = os.path.abspath(os.path.expanduser(config.output.directory))
+        requested = filepath or filename
+        if (
+            filepath
+            and os.path.isabs(filepath)
+            and getattr(config.output, "allow_arbitrary_paths", False)
+        ):
+            saved_path = os.path.abspath(filepath)
+        elif requested:
+            saved_path = os.path.join(
+                output_dir, "drawings", os.path.basename(requested)
+            )
         else:
             saved_path = None
 
@@ -151,6 +159,32 @@ def _switch(spec: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _delete(spec: Dict[str, Any]) -> Dict[str, Any]:
+    """Recycle one exact, closed CAD drawing after explicit confirmation."""
+    target = str(
+        spec.get("target") or spec.get("filepath") or spec.get("filename") or ""
+    ).strip()
+    if not target:
+        return {
+            "success": False,
+            "error": "delete requires an exact target filename or path",
+        }
+    if spec.get("confirm") is not True:
+        return {
+            "success": False,
+            "requires_confirmation": True,
+            "target": target,
+            "error": (
+                "Deletion was not performed. Repeat with confirm=true after "
+                "verifying the exact closed drawing."
+            ),
+        }
+    return get_current_adapter().delete_drawing_file(
+        target,
+        include_sidecars=bool(spec.get("include_sidecars", False)),
+    )
+
+
 # Dispatch table: action -> (handler, required_fields)
 FILE_DISPATCH: Dict[str, Tuple[Callable, List[str]]] = {
     "save": (_save, []),
@@ -158,6 +192,7 @@ FILE_DISPATCH: Dict[str, Tuple[Callable, List[str]]] = {
     "close": (_close, []),
     "list": (_list, []),
     "switch": (_switch, ["drawing_name"]),
+    "delete": (_delete, []),
 }
 
 
@@ -188,7 +223,7 @@ def register_file_tools(mcp):
 
     @cad_tool(mcp, "manage_files")
     def manage_files(
-        operations: str,
+        operations: Union[str, Dict[str, Any], List[Dict[str, Any]]],
     ) -> str:
         """
         Manage drawing files with one or more operations in a single call.
@@ -202,14 +237,22 @@ def register_file_tools(mcp):
                 close|save_changes            → close|true
                 list                          → list
                 switch|drawing_name           → switch|floor_plan.dwg
+                delete|target|confirm|sidecars → delete|old_plan.dwg|true|false
 
                 "format" = "dwg" (default), "dxf", "pdf"
                 "save_changes" = true/false (default: false)
+                "confirm" must be true for delete
+                "sidecars" = true/false (default: false)
+
+                Delete accepts one exact .dwg/.dxf inside the configured output
+                directory, refuses open drawings and wildcards, and moves files
+                to the Windows Recycle Bin. Close a drawing explicitly first.
 
                 Example:
                     save|backup.dwg
                     new
                     switch|floor_plan.dwg
+                    delete|old_plan.dwg|true|true
 
                 JSON format also supported for backwards compatibility.
 

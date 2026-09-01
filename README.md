@@ -25,8 +25,11 @@ TopoSpatial-CAD MCP constructs a rich spatial knowledge graph:
 
 ### Current implementation status
 
-- **8 unified MCP tools** for session, drawing, layer, entity, block, file,
-  export, and topology workflows.
+- **9 unified MCP tools**, including typed high-level design orchestration plus
+  the existing low-level CAD and topology workflows.
+- **3–6-call architectural lifecycle** through bounded semantic context,
+  revision-cached topology, one local execution plan, compact preview, and
+  atomic apply.
 - **Native AutoCAD Architecture authoring** for `AecDbWall`, `AecDbDoor`, and
   `AecDbWindow`, with runtime AEC API/style discovery.
 - **Portable fallback geometry** for ordinary AutoCAD, ZWCAD, GstarCAD, and
@@ -36,7 +39,7 @@ TopoSpatial-CAD MCP constructs a rich spatial knowledge graph:
 - **Preview/apply transactions** with a 10-minute default expiry, drawing
   revision checks, idempotent apply, one AutoCAD undo group, and verified
   rollback.
-- **228 automated tests passing** on the current Windows development setup.
+- **267 automated tests passing** on the current Windows development setup.
 
 ```
 ┌────────────────────────────────────────────────────────┐
@@ -181,17 +184,18 @@ TopologicPy operates strictly as an on-demand **computational layer**, ensuring 
 
 ## Core Capabilities & Tools
 
-TopoSpatial-CAD MCP provides **8 unified tools** covering dozens of CAD and
+TopoSpatial-CAD MCP provides **9 unified tools** covering dozens of CAD and
 topology operations:
 
 | Tool | Actions / Scope | Description |
 | :--- | :--- | :--- |
+| **`manage_design`** | `inspect`, `get_context`, `get_result`, `create`, `modify`, `validate`, `preview`, `apply`, `cancel`, `rollback`, `metrics` | Typed high-level orchestration, affected-scope context, cached topology, execution plans, compact results, and safe transactions. |
 | **`manage_topology`** | `analyze`, `query`, `preview`, `apply`, `export` | Explicit 2D room/wall/door/window semantics, native ACA authoring, relationship queries, and JSON-LD/Turtle export. |
 | **`draw_entities`** | `line`, `circle`, `arc`, `rectangle`, `polyline`, `spline`, `text`, `dimension`, `leader`, `mleader`, `table` | High-speed parameterized geometric drawing with shorthand aliases such as `rect`. |
 | **`manage_blocks`** | `list`, `info`, `create`, `insert`, `get_attrs`, `set_attrs` | Full block definition, insertion, and dynamic attribute tag read/write. |
 | **`manage_layers`** | `list`, `info`, `create`, `delete`, `rename`, `turn_on`, `turn_off`, `set_color`, `is_on` | Layer state management and filtering; shorthand `on`/`off` aliases are supported. |
 | **`manage_entities`** | `select`, `move`, `rotate`, `scale`, `set_color`, `set_layer`, `set_color_bylayer`, `copy`, `paste`, `delete` | Handle-based entity manipulation and property assignments. |
-| **`manage_files`** | `new`, `save`, `close`, `list`, `switch` | Multi-drawing tab management and DWG/DXF/PDF save/export. |
+| **`manage_files`** | `new`, `save`, `close`, `list`, `switch`, `delete` | Multi-drawing management, save/export, and confirmed Recycle Bin cleanup for closed MCP outputs. |
 | **`manage_session`** | `connect`, `disconnect`, `status`, `capabilities`, `check_running`, `list_supported`, `zoom_extents`, `screenshot`, `export_view`, `undo`, `redo`, `open_dashboard` | Thread-local connection handling, native ACA/style discovery, viewport control, capture, history, and diagnostics. |
 | **`export_data`** | `json`, `excel` (all / selected entities) | Drawing data extraction with automated Excel multi-sheet reports. |
 
@@ -268,26 +272,51 @@ topology mutation, set the active drawing's `INSUNITS` to millimetres (`4`).
 ### 4. Recommended agent workflow
 
 1. Run `manage_session` `status` and `capabilities`.
-2. Run `manage_topology(action="analyze")` and keep its SHA-256 revision.
-3. Submit a strict change document to `manage_topology(action="preview")`.
-4. Review the returned diff, warnings, representation, and affected handles.
-5. Apply the returned transaction ID exactly once; repeated apply is safe and
+2. Run `manage_design` with `action="inspect"` and keep its SHA-256 revision.
+3. For a modification, request only the affected neighborhood with
+   `action="get_context"`.
+4. Submit all approved dependent changes in one `create` or `modify` preview.
+5. Review the compact plan, warnings, problem classes, and affected IDs.
+6. Stop for approval when required, then apply the returned transaction ID;
+   repeated apply is safe and
    returns the stored result.
-6. Query or analyze again, save the DWG, and export JSON-LD/Turtle as needed.
+7. Capture one meaningful final checkpoint, save the DWG, and export as needed.
 
-For architectural objects, explicitly tell the agent: **use
-`manage_topology`, not `draw_entities`**. The generic drawing tool intentionally
-creates standard CAD geometry and does not invoke ACA wall/door/window objects.
+For modification requests, never create a new drawing unless the user asks for
+one. Work in the active drawing through preview/apply. Before low-level drawing,
+identify semantic entities, get their bounded neighborhood, build one plan,
+batch mutations, validate locally, and return a compact result. Do not call the
+model between deterministic geometry operations or rerun topology for a cached
+revision. Repository agents inherit these rules from [`AGENTS.md`](AGENTS.md).
+
+Use `manage_design` for the architectural lifecycle. `manage_topology` remains
+available for direct graph/export work and backward compatibility;
+`draw_entities` remains appropriate for optimized decorative geometry batches.
 
 See [Native ACA and topology workflow](docs/07-NATIVE-ACA-TOPOLOGY.md) for a
 complete 5000 × 4000 mm room example with one door and two windows.
+
+### 5. Safe cleanup of generated drawings
+
+`manage_files` can now delete exact `.dwg`/`.dxf` outputs inside the configured
+export root by moving them to the Windows Recycle Bin:
+
+```text
+delete|old_plan.dwg|true|false
+```
+
+The last flag controls matching topology sidecars. The action requires
+`confirm=true`, refuses wildcards/directories, and refuses any drawing that is
+still open in CAD. First use `list`, then explicitly `switch` and `close` the
+target drawing. To clean several outputs, send one exact delete line per file;
+there is intentionally no `delete all` or glob operation.
 
 ---
 
 ## Verification & Testing
 
 ```powershell
-# Run the full test suite
+# Run the full test suite (267 tests at this revision)
 uv run pytest -q
 
 # Check the files changed in your branch
@@ -313,7 +342,8 @@ TopoSpatial-CAD-MCP/
 │   ├── core/                  # Interfaces, ConfigManager, Models
 │   ├── adapters/              # Mixin-based COM adapter layer
 │   ├── mcp_tools/             # Shorthand dispatchers & tool registrations
-│   │   └── tools/             # 8 unified MCP tool modules
+│   │   └── tools/             # 9 unified MCP tool modules
+│   ├── design_engine/         # Plans, cache, context, retries, metrics
 │   ├── topology_engine/       # Spatial topology, XData schemas, transactions
 │   ├── ui/                    # UI resources and inspector templates
 │   └── web/                   # Real-time CAD status dashboard
@@ -327,6 +357,8 @@ TopoSpatial-CAD-MCP/
 - [Installation and MCP client setup](docs/01-SETUP.md)
 - [System architecture](docs/02-ARCHITECTURE.md)
 - [Native ACA and topology workflow](docs/07-NATIVE-ACA-TOPOLOGY.md)
+- [Efficient design orchestration](docs/08-DESIGN-ORCHESTRATION.md)
+- [Round-trip and response benchmarks](docs/09-EFFICIENCY-BENCHMARKS.md)
 - [Complete MCP tool reference](docs/05-REFERENCE.md)
 - [Troubleshooting](docs/04-TROUBLESHOOTING.md)
 - [Changelog](docs/03-CHANGELOG.md)

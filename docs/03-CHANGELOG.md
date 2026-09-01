@@ -4,6 +4,28 @@
 
 ### Added
 
+- Typed `manage_design` high-level lifecycle with `inspect`, `get_context`,
+  `get_result`, `create`, `modify`, `validate`, `preview`, `apply`, `cancel`,
+  `rollback`, and `metrics` actions.
+- Local `ExecutionPlan` generation, host-before-opening dependency ordering,
+  affected semantic ID reporting, and one preview transaction for a complete
+  approved architectural batch.
+- Revision-keyed topology analysis cache and a bounded semantic-neighborhood
+  walker with process-local pagination for truncated context.
+- `summary`, `normal`, `detailed`, and `debug` response levels; summary is the
+  compact default.
+- Local problem classes (`AUTO_FIXABLE`, `NEEDS_LLM_DECISION`, `FATAL`) with
+  duplicate-wall, overlapping-room, and semantic-ID validation.
+- Structured failure responses with error codes, stages, retryability,
+  suggested actions, and stable fingerprints.
+- One-attempt retry/reconnect policy for recognized transient AutoCAD busy/RPC
+  failures and repeated-failure stopping after two identical attempts.
+- Per-task proxy metrics for MCP calls, CAD/topology operations, retries,
+  failures, response bytes, execution time, and inspected/modified entities.
+- Repository-level `AGENTS.md` enforcing in-place modification, bounded context,
+  local planning/validation, meaningful image checkpoints, and approval before
+  apply.
+- Design orchestration and efficiency benchmark documentation.
 - Optional `topology` dependency group pinned to TopologicPy 0.9.65 and
   topologic-core 8.0.4.
 - `manage_topology` for explicit 2D room, wall, door, and window semantics;
@@ -21,9 +43,24 @@
   discovery.
 - A complete native ACA/topology workflow guide with a tested 5000 × 4000 mm
   clear-room example.
+- Confirmed `manage_files` `delete` action for exact closed `.dwg`/`.dxf`
+  outputs. It optionally includes matching topology sidecars and uses the
+  Windows Recycle Bin.
 
 ### Changed
 
+- `manage_session` now advertises a typed discriminated native object/array
+  schema while retaining JSON-encoded strings for backward compatibility.
+- Drawing, entity, layer, block, and file batch tools now advertise native MCP
+  object/array inputs as well as shorthand strings.
+- Boolean autocorrection preserves invalid structured values so `{}` cannot be
+  silently converted to `false`; typed validation now reports the mismatch.
+- Topology legacy payload validation is action-specific and errors are
+  machine-actionable. `manage_topology` remains available for compatibility;
+  agents should prefer `manage_design` for architectural tasks.
+- Preview transactions now support cancellation and record execution metadata;
+  applied transactions can be rolled back only while the CAD revision proves
+  they are still the latest safe change.
 - Adapter registry and active adapter context are thread-local so COM objects do
   not cross MCP, dashboard, and topology worker threads.
 - Session status reconnects on the calling worker and no longer reports a valid
@@ -41,9 +78,16 @@
 - **Arbitrary output paths**: Added the opt-in `output.allow_arbitrary_paths`
   setting; safe configured output paths remain the default.
 - **Selection mapping for tables**: Registered `table` as `AcDbTable`.
+- `manage_files save` now reports the actual `drawings` subdirectory path used
+  by the adapter.
 
 ### Fixed
 
+- MCP clients receiving `expected string, received array` for native batch and
+  session operation arrays.
+- Agents repeatedly rebuilding the unchanged topology graph between inspect,
+  context, and preview calls.
+- Opening-before-host ordering in otherwise valid multi-object design batches.
 - Post-apply JSON-LD serialization failure caused by assigning both a scalar and
   relation list to `cad:hostWall`.
 - Rollback returning before AutoCAD completed its asynchronous undo command.
@@ -51,6 +95,8 @@
   explicitly managed clear-interior room.
 - AutoCAD Architecture screenshots capturing another foreground application or
   only the upper-left quadrant at 200% display scaling.
+- Agents being unable to remove MCP-created drawings because `manage_files`
+  exposed no deletion workflow.
 - Type-checking warning in `DrawMLeaderRequest` where `text_height` could resolve
   to `Any | None` instead of `float`.
 
@@ -61,7 +107,9 @@
 - Example output: 4 `AecDbWall`, 1 `AecDbDoor`, 2 `AecDbWindow`, one semantic
   room boundary, 8 XData-tagged objects, 8 graph nodes, 14 relations, and zero
   duplicate candidates.
-- Full suite: **228 tests passed** on 2026-08-31.
+- Full suite: **267 tests passed** on 2026-09-01.
+- Schema, cache, context pagination, compact response, retry, repeated-failure,
+  cancellation, rollback, and 3-call create/room/opening workflow regressions.
 
 ---
 

@@ -87,7 +87,8 @@ Add to `%APPDATA%\Claude\claude_desktop_config.json`:
 4. Check `manage_session` with `status` and `capabilities` before asking for
    native architectural objects.
 
-The first diagnostic call should pass this JSON string to `operations`:
+The first diagnostic call should pass this native array to `operations` (a
+JSON-encoded string remains accepted for older clients):
 
 ```json
 [
@@ -97,8 +98,9 @@ The first diagnostic call should pass this JSON string to `operations`:
 ```
 
 For topology mutations, set `INSUNITS` to millimetres (`4`) in the active DWG.
-Use `manage_topology` for rooms, walls, doors, and windows; `draw_entities`
-creates generic CAD geometry.
+Prefer `manage_design` for room/wall/door/window creation and modification.
+`manage_topology` remains available for direct graph/export work;
+`draw_entities` creates generic CAD geometry.
 
 ## Project Structure
 
@@ -106,7 +108,7 @@ creates generic CAD geometry.
 TopoSpatial-CAD-MCP/
 ├── src/
 │   ├── server.py              # FastMCP entry point
-│   ├── __version__.py         # Version (0.2.0)
+│   ├── __version__.py         # Package version
 │   ├── config.json            # Runtime configuration
 │   ├── core/                  # Abstract interfaces
 │   │   ├── cad_interface.py   # CADInterface ABC
@@ -123,7 +125,8 @@ TopoSpatial-CAD-MCP/
 │   │   ├── decorators.py      # @cad_tool
 │   │   ├── shorthand.py       # Command parsing logic
 │   │   ├── validator.py       # Spec validation and correction
-│   │   └── tools/             # 8 unified tools
+│   │   └── tools/             # 9 unified tools
+│   ├── design_engine/         # Orchestration, cache, retries, metrics
 │   ├── topology_engine/       # 2D semantics, transactions, sidecars
 │   ├── ui/                    # UI resources and templates
 │   └── web/                   # Web dashboard API and static files
@@ -135,7 +138,7 @@ TopoSpatial-CAD-MCP/
 ## Key Commands
 
 ```powershell
-uv run pytest -q                            # Run all 228 tests
+uv run pytest -q                            # Run all 267 tests
 uv run ruff check <changed-files>           # Lint files changed in your branch
 uv run ruff format <changed-files>          # Format files changed in your branch
 uv run --extra docs mkdocs build --strict   # Validate documentation

@@ -30,3 +30,14 @@ def test_applied_transaction_keeps_its_idempotent_result(monkeypatch) -> None:
 
     assert stored.status == "applied"
     assert stored.result == {"revision": "sha256:b"}
+
+
+def test_pending_transaction_can_be_cancelled_without_apply() -> None:
+    store = TransactionStore(ttl_seconds=600)
+    transaction = store.create("room.dwg", "sha256:a", [], [], [])
+
+    cancelled = store.cancel(transaction.transaction_id)
+
+    assert cancelled.status == "cancelled"
+    with pytest.raises(ValueError, match="Cancelled transactions"):
+        store.mark_applied(transaction.transaction_id, {})

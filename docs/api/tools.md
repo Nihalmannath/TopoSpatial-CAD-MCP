@@ -1,9 +1,18 @@
 # MCP Tools
 
-The 8 unified MCP tools exposed to Claude or any MCP client. Drawing, layer,
+The 9 unified MCP tools exposed to Claude or any MCP client. Drawing, layer,
 entity, block, and file tools accept compact shorthand. `manage_session` accepts
-JSON operations, while `manage_topology` uses explicit structured arguments and
-strict JSON-LD-shaped change documents.
+typed native objects/arrays or legacy JSON strings. `manage_design` exposes a
+discriminated high-level lifecycle, while `manage_topology` preserves explicit
+structured graph operations and strict JSON-LD-shaped change documents.
+
+## manage_design
+
+::: mcp_tools.tools.design
+    options:
+      show_source: false
+      members: [register_design_tools]
+      filters: ["!^_"]
 
 ## draw_entities
 

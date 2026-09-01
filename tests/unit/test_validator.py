@@ -162,6 +162,11 @@ class TestCoerceBool:
         assert coerce_bool(1.0) is True
         assert coerce_bool(0.0) is False
 
+    def test_empty_object_is_not_silently_coerced_to_false(self):
+        value = {}
+
+        assert coerce_bool(value) is value
+
 
 # ========== Coordinate Normalization Tests ==========
 

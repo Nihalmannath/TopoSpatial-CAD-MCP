@@ -21,6 +21,7 @@ from .entities import register_entity_tools
 from .export import register_export_tools
 from .blocks import register_block_tools
 from .topology import register_topology_tools
+from .design import register_design_tools
 
 __all__ = [
     "register_session_tools",
@@ -31,4 +32,5 @@ __all__ = [
     "register_export_tools",
     "register_block_tools",
     "register_topology_tools",
+    "register_design_tools",
 ]

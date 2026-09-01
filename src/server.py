@@ -23,6 +23,7 @@ from mcp_tools.tools import (
     register_export_tools,
     register_block_tools,
     register_topology_tools,
+    register_design_tools,
 )
 from web.api import api_app, log_handler
 
@@ -31,8 +32,23 @@ setup_utf8_encoding()
 logger = setup_logging()
 logging.getLogger().addHandler(log_handler)
 
+# Instructions are sent to MCP clients during initialization. Keep the core CAD
+# workflow here as well as in AGENTS.md so non-repository clients receive it.
+MCP_INSTRUCTIONS = """
+For modification requests, never create a new drawing unless the user explicitly
+asks for one. Modify the current drawing in place through preview/apply
+transactions. Before low-level drawing calls, identify the affected semantic
+entities, fetch only their bounded topology neighborhood, create one local
+execution plan, batch dependent CAD mutations, validate locally, and return a
+compact summary. Do not call an LLM between deterministic geometry operations or
+rerun full topology analysis when the current drawing revision is cached. Capture
+images only at meaningful checkpoints, preferably after preview and after final
+modification. Stop after preview whenever user approval is required.
+""".strip()
+
+
 # Initialize FastMCP server
-mcp = FastMCP(name=__title__)
+mcp = FastMCP(name=__title__, version=__version__, instructions=MCP_INSTRUCTIONS)
 
 
 def register_all_tools():
@@ -73,6 +89,9 @@ def register_all_tools():
 
     register_topology_tools(mcp)
     logger.debug("  ✓ Topology tools registered")
+
+    register_design_tools(mcp)
+    logger.debug("  ✓ Design orchestration tools registered")
 
     logger.info("All MCP tools registered successfully")
 

@@ -2,15 +2,17 @@
 
 ## Summary
 
-**8 unified MCP tools**, including the optional topology workflow:
+**9 unified MCP tools**, including high-level design orchestration and the
+optional topology workflow:
 
 | Unified Tool | Actions | Category |
 |--------------|---------|----------|
+| `manage_design` | inspect, get_context, get_result, create, modify, validate, preview, apply, cancel, rollback, metrics | High-level architectural orchestration |
 | `manage_session` | connect, disconnect, status, capabilities, zoom_extents, undo, redo, screenshot, export_view, check_running, open_dashboard, list_supported | Connection & Control |
 | `draw_entities` | line, circle, arc, rect, polyline, spline, text, dimension, leader, mleader, table | Drawing |
 | `manage_blocks` | list, info, insert, create, get_attrs, set_attrs | Blocks |
 | `manage_layers` | create, delete, rename, on, off, set_color, is_on, list, info | Layers |
-| `manage_files` | save, new, close, list, switch | Files |
+| `manage_files` | save, new, close, list, switch, delete | Files |
 | `manage_entities` | select, move, rotate, scale, set_color, set_layer, set_color_bylayer, copy, paste, delete | Entities |
 | `export_data` | scope=all/selected, format=json/excel | Export |
 | `manage_topology` | analyze, query, preview, apply, export | Architectural topology |
@@ -19,7 +21,9 @@
 
 ## Shorthand Format
 
-All tools accept operations as a **plain-text shorthand** (one per line), which is far more token-efficient than JSON:
+Drawing, layer, entity, block, and file tools accept **plain-text shorthand**
+(one per line), which is token-efficient. They now also advertise native MCP
+objects/arrays, so clients no longer need to stringify JSON:
 
 ```
 # draw_entities
@@ -36,15 +40,15 @@ select|layer|walls
 move|A1B2,C3D4|10|5
 ```
 
-JSON arrays are also accepted for backwards compatibility.
+JSON-encoded strings remain accepted for backwards compatibility.
 
 ---
 
 ## manage_session
 
 Connection lifecycle, capability discovery, view control, capture, and history.
-Unlike the shorthand tools, `manage_session.operations` is a JSON object or
-array encoded as a string.
+`manage_session.operations` has a typed discriminated schema. Send a native JSON
+object/array. A JSON-encoded string remains supported for older clients.
 
 ```json
 [
@@ -160,9 +164,31 @@ new                           # create new drawing
 close|save_changes            → close|true
 list                          # list open drawings
 switch|drawing_name           → switch|floor_plan.dwg
+delete|target|confirm|sidecars → delete|old_plan.dwg|true|true
 ```
 
 **`format`:** `dwg` (default) | `dxf` | `pdf`
+
+`delete` is intentionally strict:
+
+- `confirm` must be `true`.
+- The target must be one exact `.dwg` or `.dxf`; wildcards and directories are
+  rejected.
+- The resolved path must remain inside `output.directory`, even if arbitrary
+  save paths are enabled.
+- The drawing must already be closed in CAD. Use `list`, `switch`, and `close`
+  explicitly first.
+- The file is moved to the Windows Recycle Bin. Set `sidecars=true` to include
+  matching `<drawing>.topology.jsonld` and `<drawing>.topology.ttl` files.
+
+Example safe sequence:
+
+```text
+list
+switch|old_plan.dwg
+close|false
+delete|old_plan.dwg|true|true
+```
 
 ---
 
@@ -178,6 +204,65 @@ scope=selected, format=excel, filename=selection.xlsx
 ```
 
 **Excel columns:** `Handle`, `ObjectType`, `Layer`, `Color`, `Length`, `Area`, `Radius`, `Circumference`, `Name`
+
+---
+
+## manage_design
+
+Preferred lifecycle for architectural creation and modification. The single
+`request` argument is a typed object whose required fields are selected by
+`action`.
+
+```json
+{"request": {"action": "inspect", "task_id": "floor-plan"}}
+```
+
+Use the returned revision in one batch preview:
+
+```json
+{
+  "request": {
+    "action": "modify",
+    "task_id": "floor-plan",
+    "base_revision": "sha256:...",
+    "changes": [
+      {
+        "op": "update",
+        "@id": "urn:door:kitchen",
+        "geometry": {
+          "host_wall_id": "urn:wall:kitchen",
+          "offset": 1500,
+          "width": 900,
+          "hinge": "right",
+          "swing": "in"
+        }
+      }
+    ]
+  }
+}
+```
+
+Review and stop for approval, then apply:
+
+```json
+{
+  "request": {
+    "action": "apply",
+    "task_id": "floor-plan",
+    "transaction_id": "..."
+  }
+}
+```
+
+`summary` is the default detail level. `normal`, `detailed`, and `debug` add
+affected IDs, diffs, raw operations, and complete execution-plan data only when
+needed. `get_context` supports `max_entities`, `max_neighbors`, `graph_depth`,
+`include_geometry`, and `include_metadata`. Use `get_result` to page a truncated
+result without rerunning CAD/topology work.
+
+For modifications, the active drawing is always edited in place. Do not call
+`manage_files new` unless the user explicitly asks for a new drawing. See
+[Efficient Design Orchestration](08-DESIGN-ORCHESTRATION.md).
 
 ---
 

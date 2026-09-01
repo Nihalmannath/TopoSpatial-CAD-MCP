@@ -17,7 +17,7 @@ SHORTHAND FORMAT (one per line):
 
 import json
 import logging
-from typing import Optional, Dict, Any, Callable, List, Tuple
+from typing import Optional, Dict, Any, Callable, List, Tuple, Union
 
 
 from pydantic import ValidationError
@@ -342,7 +342,7 @@ def register_entity_tools(mcp):
 
     @cad_tool(mcp, "manage_entities")
     def manage_entities(
-        operations: str,
+        operations: Union[str, Dict[str, Any], List[Dict[str, Any]]],
     ) -> str:
         """
         Manage entities: select, transform, restyle, copy/paste.

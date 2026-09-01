@@ -492,6 +492,11 @@ FILE_OP_FIELDS: Dict[str, FieldList] = {
     "switch": [
         ("drawing_name", True, None),
     ],
+    "delete": [
+        ("target", True, None),
+        ("confirm", False, False),
+        ("include_sidecars", False, False),
+    ],
 }
 
 
@@ -527,6 +532,18 @@ def parse_file_op_shorthand(line: str) -> Dict[str, Any]:
         # Format from third part if present
         if len(parts) > 2:
             spec["format"] = parts[2]
+        return autocorrect_spec(spec, "file_op")
+
+    if action == "delete" and len(parts) > 1:
+        spec["target"] = parts[1]
+        if len(parts) > 2:
+            spec["confirm"] = _parse_bool(parts[2])
+        else:
+            spec["confirm"] = False
+        if len(parts) > 3:
+            spec["include_sidecars"] = _parse_bool(parts[3])
+        else:
+            spec["include_sidecars"] = False
         return autocorrect_spec(spec, "file_op")
 
     for i, (field_name, required, default) in enumerate(fields):
@@ -593,7 +610,30 @@ def _split_entries(input_str: str) -> List[str]:
     return entries
 
 
-def parse_drawing_input(input_str: str) -> List[Dict[str, Any]]:
+def _structured_specs(
+    value: Any, context: str
+) -> List[Dict[str, Any]] | None:
+    """Normalize native MCP objects/arrays without round-tripping through JSON."""
+    if isinstance(value, dict):
+        return [autocorrect_spec(value, context)]
+    if isinstance(value, list):
+        invalid = [
+            index for index, item in enumerate(value) if not isinstance(item, dict)
+        ]
+        if invalid:
+            raise TypeError(
+                "Structured operation arrays must contain objects; invalid indexes: "
+                + ", ".join(str(index) for index in invalid)
+            )
+        return [autocorrect_spec(item, context) for item in value]
+    if not isinstance(value, str):
+        raise TypeError(
+            "Input must be a shorthand string, an object, or an array of objects"
+        )
+    return None
+
+
+def parse_drawing_input(input_str: Any) -> List[Dict[str, Any]]:
     """
     Parse drawing entities from shorthand or JSON.
 
@@ -603,6 +643,9 @@ def parse_drawing_input(input_str: str) -> List[Dict[str, Any]]:
     Returns:
         List of entity specifications
     """
+    structured = _structured_specs(input_str, "entity")
+    if structured is not None:
+        return structured
     input_str = input_str.strip()
 
     # Detect JSON
@@ -620,7 +663,7 @@ def parse_drawing_input(input_str: str) -> List[Dict[str, Any]]:
     return [parse_entity_shorthand(entry) for entry in entries]
 
 
-def parse_entity_ops_input(input_str: str) -> List[Dict[str, Any]]:
+def parse_entity_ops_input(input_str: Any) -> List[Dict[str, Any]]:
     """
     Parse entity operations from shorthand or JSON.
 
@@ -630,6 +673,9 @@ def parse_entity_ops_input(input_str: str) -> List[Dict[str, Any]]:
     Returns:
         List of operation specifications
     """
+    structured = _structured_specs(input_str, "entity_op")
+    if structured is not None:
+        return structured
     input_str = input_str.strip()
 
     # Detect JSON
@@ -646,7 +692,7 @@ def parse_entity_ops_input(input_str: str) -> List[Dict[str, Any]]:
     return [parse_entity_op_shorthand(entry) for entry in entries]
 
 
-def parse_layer_ops_input(input_str: str) -> List[Dict[str, Any]]:
+def parse_layer_ops_input(input_str: Any) -> List[Dict[str, Any]]:
     """
     Parse layer operations from shorthand or JSON.
 
@@ -656,6 +702,9 @@ def parse_layer_ops_input(input_str: str) -> List[Dict[str, Any]]:
     Returns:
         List of operation specifications
     """
+    structured = _structured_specs(input_str, "layer_op")
+    if structured is not None:
+        return structured
     input_str = input_str.strip()
 
     # Detect JSON
@@ -672,7 +721,7 @@ def parse_layer_ops_input(input_str: str) -> List[Dict[str, Any]]:
     return [parse_layer_op_shorthand(entry) for entry in entries]
 
 
-def parse_block_ops_input(input_str: str) -> List[Dict[str, Any]]:
+def parse_block_ops_input(input_str: Any) -> List[Dict[str, Any]]:
     """
     Parse block operations from shorthand or JSON.
 
@@ -682,6 +731,9 @@ def parse_block_ops_input(input_str: str) -> List[Dict[str, Any]]:
     Returns:
         List of operation specifications
     """
+    structured = _structured_specs(input_str, "block_op")
+    if structured is not None:
+        return structured
     input_str = input_str.strip()
 
     # Detect JSON
@@ -698,7 +750,7 @@ def parse_block_ops_input(input_str: str) -> List[Dict[str, Any]]:
     return [parse_block_op_shorthand(entry) for entry in entries]
 
 
-def parse_file_ops_input(input_str: str) -> List[Dict[str, Any]]:
+def parse_file_ops_input(input_str: Any) -> List[Dict[str, Any]]:
     """
     Parse file operations from shorthand or JSON.
 
@@ -708,6 +760,9 @@ def parse_file_ops_input(input_str: str) -> List[Dict[str, Any]]:
     Returns:
         List of operation specifications
     """
+    structured = _structured_specs(input_str, "file_op")
+    if structured is not None:
+        return structured
     input_str = input_str.strip()
 
     # Detect JSON

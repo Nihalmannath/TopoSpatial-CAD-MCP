@@ -15,7 +15,7 @@ SHORTHAND FORMAT (one per line):
 
 import json
 import logging
-from typing import Optional, Dict, Any, Callable, List, Tuple
+from typing import Optional, Dict, Any, Callable, List, Tuple, Union
 
 
 from mcp_tools.decorators import cad_tool, get_current_adapter
@@ -264,7 +264,7 @@ def register_block_tools(mcp) -> None:
 
     @cad_tool(mcp, "manage_blocks")
     def manage_blocks(
-        operations: str,
+        operations: Union[str, Dict[str, Any], List[Dict[str, Any]]],
     ) -> str:
         """
         Manage blocks: create, insert, list, query, and manage attributes.

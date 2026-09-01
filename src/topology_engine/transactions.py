@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 import time
 import uuid
-from typing import Dict, List
+from typing import Any, Dict, List, Optional
 
 from .models import PreviewTransaction
 
@@ -25,6 +25,7 @@ class TransactionStore:
         operations: List[dict],
         diff: List[dict],
         warnings: List[str],
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> PreviewTransaction:
         now = time.time()
         transaction = PreviewTransaction(
@@ -36,6 +37,7 @@ class TransactionStore:
             operations=operations,
             diff=diff,
             warnings=warnings,
+            metadata=dict(metadata or {}),
         )
         with self._lock:
             self._purge_locked(now)
@@ -58,7 +60,38 @@ class TransactionStore:
             transaction = self._transactions.get(transaction_id)
             if transaction is None:
                 raise ValueError("Unknown or expired transaction_id")
+            if transaction.status == "cancelled":
+                raise ValueError("Cancelled transactions cannot be applied")
+            if transaction.status == "rolled_back":
+                raise ValueError("Rolled-back transactions cannot be applied")
             transaction.status = "applied"
+            transaction.result = result
+            return transaction
+
+    def cancel(self, transaction_id: str) -> PreviewTransaction:
+        """Cancel a pending transaction without touching CAD."""
+        with self._lock:
+            transaction = self._transactions.get(transaction_id)
+            if transaction is None:
+                raise ValueError("Unknown or expired transaction_id")
+            if transaction.status == "applied":
+                raise ValueError(
+                    "Applied transactions cannot be cancelled; use rollback"
+                )
+            if transaction.status == "rolled_back":
+                raise ValueError("Rolled-back transactions cannot be cancelled")
+            transaction.status = "cancelled"
+            return transaction
+
+    def mark_rolled_back(self, transaction_id: str, result: dict) -> PreviewTransaction:
+        """Record a successful rollback of an applied transaction."""
+        with self._lock:
+            transaction = self._transactions.get(transaction_id)
+            if transaction is None:
+                raise ValueError("Unknown or expired transaction_id")
+            if transaction.status != "applied":
+                raise ValueError("Only an applied transaction can be rolled back")
+            transaction.status = "rolled_back"
             transaction.result = result
             return transaction
 
@@ -66,7 +99,7 @@ class TransactionStore:
         expired = [
             transaction_id
             for transaction_id, transaction in self._transactions.items()
-            if transaction.expires_at <= now and transaction.status != "applied"
+            if transaction.expires_at <= now and transaction.status == "pending"
         ]
         for transaction_id in expired:
             self._transactions.pop(transaction_id, None)

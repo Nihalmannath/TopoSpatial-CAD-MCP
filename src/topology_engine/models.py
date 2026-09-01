@@ -144,5 +144,6 @@ class PreviewTransaction:
     operations: List[Dict[str, Any]]
     diff: List[Dict[str, Any]]
     warnings: List[str]
-    status: Literal["pending", "applied"] = "pending"
+    status: Literal["pending", "applied", "cancelled", "rolled_back"] = "pending"
     result: Optional[Dict[str, Any]] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)

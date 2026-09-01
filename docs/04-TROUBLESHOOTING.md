@@ -13,6 +13,7 @@
 | Unknown ACA style | Requested wall/door/window style is not installed | Use a style returned by `capabilities` |
 | Drawing looks correct but has no semantic nodes | Agent used `draw_entities` | Use `manage_topology` or explicitly annotate existing geometry |
 | Screenshot shows another app or is cropped | Old server lacks HWND/PrintWindow/DPI handling | Restart the MCP client on the updated code |
+| Delete says drawing is open | File cleanup never closes CAD documents implicitly | Switch to it, decide whether to save, close it, then retry exact delete |
 
 ## Claude Desktop Cannot See CAD
 
@@ -143,6 +144,23 @@ drawing, and preview again rather than reusing the failed transaction.
 
 ## Drawing, Layer, or Capture Problems
 
+### MCP-created drawings cannot be deleted
+
+Use the updated `manage_files` action only after listing and explicitly closing
+the target:
+
+```text
+list
+switch|old_plan.dwg
+close|false
+delete|old_plan.dwg|true|true
+```
+
+The third delete field is mandatory confirmation; the fourth optionally includes
+topology sidecars. There is no wildcard or `delete all` operation. Send one exact
+line per verified file. Only closed `.dwg`/`.dxf` files under the configured
+output root are accepted, and Windows Recycle Bin support is required.
+
 ### Drawing not visible
 
 Call `manage_session` with:
@@ -205,7 +223,6 @@ uv run --extra docs mkdocs build --strict
 npx -y @modelcontextprotocol/inspector uv run python src/server.py
 ```
 
-The current verified suite contains 228 tests. The repository also has
+The current verified suite contains 267 tests. The repository also has
 pre-existing whole-tree Ruff findings, so lint changed files rather than applying
 an unreviewed global autofix.
-

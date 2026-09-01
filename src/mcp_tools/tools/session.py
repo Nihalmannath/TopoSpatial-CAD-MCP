@@ -11,8 +11,9 @@ Covers all non-content operations: connection lifecycle, view, and history.
 import json
 import logging
 import webbrowser
-from typing import Optional, Dict, Any, Callable, List, Tuple
+from typing import Annotated, Optional, Dict, Any, Callable, List, Tuple, Union, Literal
 
+from pydantic import BaseModel, ConfigDict, Field
 
 from core import get_supported_cads, CADConnectionError, get_config
 from adapters.adapter_manager import (
@@ -23,6 +24,52 @@ from adapters.adapter_manager import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class _SessionOperationBase(BaseModel):
+    """Strict base for native structured session operations."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class SimpleSessionOperation(_SessionOperationBase):
+    action: Literal[
+        "connect",
+        "disconnect",
+        "status",
+        "list_supported",
+        "check_running",
+        "zoom_extents",
+        "screenshot",
+        "export_view",
+    ]
+
+
+class CapabilitiesSessionOperation(_SessionOperationBase):
+    action: Literal["capabilities"]
+    include_styles: bool = True
+
+
+class HistorySessionOperation(_SessionOperationBase):
+    action: Literal["undo", "redo"]
+    count: int = Field(default=1, ge=1, le=100)
+
+
+class DashboardSessionOperation(_SessionOperationBase):
+    action: Literal["open_dashboard"]
+    host: str = Field(default="127.0.0.1", min_length=1)
+    port: int = Field(default=8888, ge=1, le=65535)
+
+
+SessionOperation = Annotated[
+    Union[
+        SimpleSessionOperation,
+        CapabilitiesSessionOperation,
+        HistorySessionOperation,
+        DashboardSessionOperation,
+    ],
+    Field(discriminator="action"),
+]
 
 
 def _refresh_cache_safe():
@@ -307,7 +354,7 @@ def register_session_tools(mcp):
 
     @mcp.tool()
     def manage_session(
-        operations: str,
+        operations: Union[str, SessionOperation, List[SessionOperation]],
     ) -> str:
         """
         Manage CAD session: connection, view, and history operations.
@@ -356,6 +403,10 @@ def register_session_tools(mcp):
             )
             if not isinstance(ops_data, list):
                 ops_data = [ops_data]
+            ops_data = [
+                item.model_dump() if isinstance(item, BaseModel) else item
+                for item in ops_data
+            ]
         except json.JSONDecodeError as e:
             return json.dumps(
                 {
@@ -371,6 +422,17 @@ def register_session_tools(mcp):
         results = []
 
         for i, spec in enumerate(ops_data):
+            if not isinstance(spec, dict):
+                results.append(
+                    {
+                        "index": i,
+                        "success": False,
+                        "error_code": "SESSION_OPERATION_INVALID",
+                        "error": "Each session operation must be an object",
+                        "retryable": False,
+                    }
+                )
+                continue
             action = spec.get("action")
 
             if not action:

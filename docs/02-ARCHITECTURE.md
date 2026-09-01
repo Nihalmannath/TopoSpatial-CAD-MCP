@@ -5,7 +5,7 @@
 ```
 ┌────────────────────────────────────────────────────────┐
 │  TopoSpatial-CAD MCP Server (server.py)                │
-│  8 unified tools + CAD commands + Spatial Topology     │
+│  9 unified tools + local orchestration + topology      │
 └──────────────┬─────────────────────────────────────────┘
                │
        ┌───────┴──────────┐
@@ -43,20 +43,24 @@
 
 ### 1. Server (`server.py`)
 
-Entry point that registers **8 unified MCP tools** via FastMCP. Seven tools dispatch established CAD commands; `manage_topology` provides the architectural spatial topology and ontology workflow.
+Entry point that registers **9 unified MCP tools** via FastMCP. Seven tools
+dispatch established CAD commands, `manage_topology` preserves the direct graph
+workflow, and `manage_design` provides the preferred high-level architectural
+lifecycle.
 
 ### 2. Tools (`mcp_tools/tools/`)
 
-8 modules, each providing one unified tool or workflow:
+9 modules, each providing one unified tool or workflow:
 
 | Module | Tool | Actions | Responsibility |
 | :--- | :--- | :--- | :--- |
+| `design.py` | `manage_design` | 11 | Inspect/context, local plans, compact preview, apply/cancel/rollback, metrics |
 | `topology.py` | `manage_topology` | 5 | Analyze, query, preview, apply, export ontology |
 | `session.py` | `manage_session` | 12 | Connection, capabilities, view, capture, history, dashboard |
 | `drawing.py` | `draw_entities` | 11 | Unified parameterized entity creation |
 | `blocks.py` | `manage_blocks` | 6 | Block management & attribute tags |
 | `layers.py` | `manage_layers` | 9 | Layer management & queries |
-| `files.py` | `manage_files` | 5 | File operations & format conversion |
+| `files.py` | `manage_files` | 6 | File operations, format conversion, safe Recycle Bin cleanup |
 | `entities.py` | `manage_entities` | 10 | Select, move, rotate, scale, color |
 | `export.py` | `export_data` | 2 formats × 2 scopes | Data extraction & formatted Excel |
 
@@ -184,6 +188,46 @@ successful `apply` write both files to the configured output directory:
 Turtle is generated deterministically from the validated graph rather than
 using TopologicPy's slower `TTLString` path.
 
+### 7. Design Orchestration Engine (`design_engine/`)
+
+The high-level service is deliberately separate from MCP registration and CAD
+COM implementation:
+
+```text
+manage_design typed request
+        ↓
+DesignOrchestrator
+├── AnalysisCache          revision-keyed pure graph cache
+├── semantic index/walker  bounded affected-scope context
+├── ExecutionPlan          deterministic local stages
+├── topology planner       geometry, host, dependency validation
+├── RetryPolicy            one retry for recognized CAD transients
+├── FailureMemory          stops the same failure after two attempts
+├── TransactionStore       preview/apply/cancel/rollback lifecycle
+└── MetricsStore           local call/operation/byte/time proxies
+        ↓
+CADTopologyBridge → thread-local adapter → AutoCAD
+```
+
+The cache stores only immutable `DrawingSnapshot` data and serializable analysis
+results. A COM proxy never enters it. Each CAD call still captures a cheap
+fingerprintable snapshot so the server can prove whether the active revision is
+unchanged; expensive topology analysis is skipped on a cache hit.
+
+`get_context` builds a bidirectional semantic index from explicit JSON-LD
+relationships and scalar host/parent IDs, then performs a depth- and
+entity-bounded traversal. Truncated results are paged from process-local result
+storage without reconnecting to CAD.
+
+The execution plan orders deterministic dependencies, such as walls before
+hosted doors/windows, and categorizes validation findings as `AUTO_FIXABLE`,
+`NEEDS_LLM_DECISION`, or `FATAL`. Only the approved transaction is passed to the
+bridge. The LLM is not placed between individual geometry operations.
+
+Successful mutation invalidates earlier drawing revisions and performs a full
+post-apply graph rebuild. Fine-grained graph surgery remains deferred until it
+can preserve the same correctness guarantees.
+
 ---
 
 ## Design Patterns
@@ -247,6 +291,10 @@ with com_session():
 | :--- | :--- |
 | **Thread-local connection reuse** | Avoids unnecessary reconnects without sharing COM proxies |
 | **Batch Operations** | 60-70% fewer API calls |
+| **High-level design transaction** | One MCP preview for all dependent semantic changes |
+| **Revision-keyed topology cache** | Avoids repeat analysis on unchanged drawings |
+| **Affected-scope traversal** | Keeps unrelated graph nodes out of model context |
+| **Compact response levels** | Omits geometry/diff/debug data by default |
 | **Pickfirst Selection Set** | Fast entity access |
 | **Deferred Refresh** | `_skip_refresh=True` for batches |
 | **Handle-to-Object Lookup** | O(1) direct entity access |

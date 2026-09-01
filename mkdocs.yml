@@ -69,6 +69,8 @@ nav:
   - Getting Started: 01-SETUP.md
   - Architecture: 02-ARCHITECTURE.md
   - Native ACA & Topology: 07-NATIVE-ACA-TOPOLOGY.md
+  - Design Orchestration: 08-DESIGN-ORCHESTRATION.md
+  - Efficiency Benchmarks: 09-EFFICIENCY-BENCHMARKS.md
   - Web Dashboard: 06-WEB-DASHBOARD.md
   - API Reference:
       - Overview: api/index.md

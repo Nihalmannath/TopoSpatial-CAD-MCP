@@ -1,7 +1,7 @@
 """
 File mixin for AutoCAD adapter.
 
-Handles file operations (save, open, close, new, switch).
+Handles file operations (save, open, close, new, switch, recycle).
 """
 
 import logging
@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING, Any
 from core import get_config
 
 logger = logging.getLogger(__name__)
+
+_DELETABLE_DRAWING_EXTENSIONS = frozenset({".dwg", ".dxf"})
 
 
 class FileMixin:
@@ -76,7 +78,11 @@ class FileMixin:
                 save_filename = f"{save_filename}.{format}"
 
             # ========== Resolve Final Path ==========
-            if filepath and Path(filepath).is_absolute() and getattr(config.output, "allow_arbitrary_paths", False):
+            if (
+                filepath
+                and Path(filepath).is_absolute()
+                and getattr(config.output, "allow_arbitrary_paths", False)
+            ):
                 final_path = Path(filepath)
             else:
                 # Use centralized export path resolution for standard saves
@@ -95,7 +101,8 @@ class FileMixin:
         """Open a drawing file in the CAD application via COM.
 
         Args:
-            filepath: Absolute path to the drawing file to open (e.g. ``C:/drawings/plan.dwg``).
+            filepath: Absolute path to the drawing file to open (for example,
+                ``C:/drawings/plan.dwg``).
 
         Returns:
             True if the file was opened successfully, False otherwise.
@@ -282,3 +289,132 @@ class FileMixin:
         except Exception as e:
             logger.error(f"Failed to close drawing: {e}")
             return False
+
+    def delete_drawing_file(
+        self, target: str, include_sidecars: bool = False
+    ) -> dict[str, Any]:
+        """Move one closed MCP-output drawing to the Windows Recycle Bin.
+
+        Deletion is deliberately narrower than saving: the exact target must be
+        a ``.dwg`` or ``.dxf`` inside the configured output root, even when
+        ``allow_arbitrary_paths`` is enabled. Open drawings are refused so an
+        agent cannot implicitly discard an unsaved CAD document.
+
+        Args:
+            target: Exact filename or path. A filename resolves in ``drawings``.
+            include_sidecars: Also recycle matching topology JSON-LD/Turtle.
+
+        Returns:
+            Structured result containing the recycled absolute paths.
+
+        Raises:
+            ValueError: If the target is unsafe, unsupported, or currently open.
+            FileNotFoundError: If the exact drawing file does not exist.
+            RuntimeError: If Windows rejects or aborts the recycle operation.
+        """
+        drawing_path, output_root = self._resolve_drawing_delete_path(target)
+        if not drawing_path.exists() or not drawing_path.is_file():
+            raise FileNotFoundError(f"Drawing file was not found: {drawing_path}")
+
+        open_name = self._matching_open_drawing(drawing_path)
+        if open_name:
+            raise ValueError(
+                f"Refusing to delete open drawing '{open_name}'. Close it explicitly "
+                "with manage_files before deleting the file."
+            )
+
+        recycle_paths = [drawing_path]
+        if include_sidecars:
+            stem = drawing_path.stem
+            for suffix in (".topology.jsonld", ".topology.ttl"):
+                sidecar = (output_root / f"{stem}{suffix}").resolve()
+                sidecar.relative_to(output_root)
+                if sidecar.exists() and sidecar.is_file():
+                    recycle_paths.append(sidecar)
+
+        self._move_to_recycle_bin(recycle_paths)
+        logger.info(
+            "Moved drawing output to Recycle Bin: %s",
+            ", ".join(str(path) for path in recycle_paths),
+        )
+        return {
+            "success": True,
+            "detail": "Drawing moved to Windows Recycle Bin",
+            "path": str(drawing_path),
+            "recycled": [str(path) for path in recycle_paths],
+            "sidecars_included": include_sidecars,
+            "recoverable": True,
+        }
+
+    @staticmethod
+    def _resolve_drawing_delete_path(target: str) -> tuple[Path, Path]:
+        """Resolve and validate one exact drawing target without creating paths."""
+        raw_target = str(target or "").strip()
+        if not raw_target:
+            raise ValueError("delete requires an exact drawing filename or path")
+        if any(character in raw_target for character in "*?[]"):
+            raise ValueError("Wildcards and glob patterns are not allowed for delete")
+
+        config = get_config()
+        output_root = Path(config.output.directory).expanduser().resolve()
+        requested = Path(raw_target).expanduser()
+        if requested.is_absolute():
+            resolved = requested.resolve()
+        elif requested.parent == Path("."):
+            resolved = (output_root / "drawings" / requested.name).resolve()
+        else:
+            resolved = (output_root / requested).resolve()
+
+        try:
+            resolved.relative_to(output_root)
+        except ValueError as exc:
+            raise ValueError(
+                "Drawing deletion is restricted to the configured output directory: "
+                f"{output_root}"
+            ) from exc
+        if resolved.suffix.casefold() not in _DELETABLE_DRAWING_EXTENSIONS:
+            allowed = ", ".join(sorted(_DELETABLE_DRAWING_EXTENSIONS))
+            raise ValueError(f"Only CAD drawing files can be deleted: {allowed}")
+        return resolved, output_root
+
+    def _matching_open_drawing(self, candidate: Path) -> str | None:
+        """Return the matching open document name, if any."""
+        application = self._get_application("delete_drawing_file")
+        candidate_key = str(candidate).casefold()
+        candidate_name = candidate.name.casefold()
+        for document in application.Documents:
+            name = str(getattr(document, "Name", ""))
+            if name.casefold() == candidate_name:
+                return name
+            try:
+                full_name = str(getattr(document, "FullName", ""))
+                if (
+                    full_name
+                    and str(Path(full_name).resolve()).casefold() == candidate_key
+                ):
+                    return name or full_name
+            except Exception:
+                continue
+        return None
+
+    @staticmethod
+    def _move_to_recycle_bin(paths: list[Path]) -> None:
+        """Recycle exact local paths through the Windows Shell API."""
+        if not paths:
+            raise ValueError("No files were provided for recycling")
+        from win32com.shell import shell, shellcon
+
+        sources = "\0".join(str(path) for path in paths) + "\0\0"
+        flags = (
+            shellcon.FOF_ALLOWUNDO
+            | shellcon.FOF_NOCONFIRMATION
+            | shellcon.FOF_SILENT
+            | shellcon.FOF_NOERRORUI
+        )
+        result, aborted = shell.SHFileOperation(
+            (0, shellcon.FO_DELETE, sources, None, flags, None, None)
+        )
+        if result != 0:
+            raise RuntimeError(f"Windows recycle operation failed with code {result}")
+        if aborted:
+            raise RuntimeError("Windows recycle operation was aborted")

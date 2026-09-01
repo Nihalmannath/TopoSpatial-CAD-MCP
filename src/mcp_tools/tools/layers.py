@@ -17,7 +17,7 @@ SHORTHAND FORMAT (one per line):
 
 import json
 import logging
-from typing import Optional, Dict, Any, Callable, List, Tuple
+from typing import Optional, Dict, Any, Callable, List, Tuple, Union
 
 
 from pydantic import ValidationError
@@ -269,7 +269,7 @@ def register_layer_tools(mcp):
 
     @cad_tool(mcp, "manage_layers")
     def manage_layers(
-        operations: str,
+        operations: Union[str, Dict[str, Any], List[Dict[str, Any]]],
     ) -> str:
         """
         Manage layers: create, modify, query, or change visibility.

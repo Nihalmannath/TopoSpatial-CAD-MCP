@@ -775,6 +775,13 @@ class CADInterface(ABC):
         pass
 
     @abstractmethod
+    def delete_drawing_file(
+        self, target: str, include_sidecars: bool = False
+    ) -> Dict[str, Any]:
+        """Move one closed drawing in the configured output root to Recycle Bin."""
+        pass
+
+    @abstractmethod
     def get_open_drawings(self) -> list:
         """
         Get list of all open drawing filenames.

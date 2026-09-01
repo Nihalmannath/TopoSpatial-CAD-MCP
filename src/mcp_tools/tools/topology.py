@@ -7,7 +7,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, Optional
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from core.config import get_config
 from mcp_tools.decorators import cad_tool, get_current_adapter
@@ -27,6 +27,24 @@ _transactions = TransactionStore(ttl_seconds=_topology_config.transaction_ttl_se
 _analysis_executor = ThreadPoolExecutor(
     max_workers=1, thread_name_prefix="topospatial-topology"
 )
+
+
+class TopologyQueryPayload(BaseModel):
+    """Strict legacy query payload retained for backward compatibility."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: Optional[str] = None
+    class_: Optional[str] = None
+    relation: Optional[str] = None
+
+
+class TopologyApplyPayload(BaseModel):
+    """Strict apply payload for an existing topology preview."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    transaction_id: str
 
 
 def _json(data: Dict[str, Any]) -> str:
@@ -83,7 +101,21 @@ def register_topology_tools(mcp: Any) -> None:
         adapter = get_current_adapter()
         action_lower = action.strip().lower()
         format_lower = format.strip().lower()
-        payload = payload or {}
+        if payload is None:
+            payload = {}
+        elif not isinstance(payload, dict):
+            return _json(
+                {
+                    "success": False,
+                    "error_code": "TOPOLOGY_PAYLOAD_INVALID",
+                    "stage": "schema",
+                    "retryable": False,
+                    "details": "payload must be an object or null",
+                    "suggested_action": (
+                        "Provide the action-specific object described by the tool schema."
+                    ),
+                }
+            )
 
         if not _topology_config.enabled:
             return _json(
@@ -112,9 +144,8 @@ def register_topology_tools(mcp: Any) -> None:
                 raise ValueError("preview and apply require scope='all'")
 
             if action_lower == "apply":
-                transaction_id = str(payload.get("transaction_id", "")).strip()
-                if not transaction_id:
-                    raise ValueError("apply requires payload.transaction_id")
+                apply_payload = TopologyApplyPayload.model_validate(payload)
+                transaction_id = apply_payload.transaction_id.strip()
                 transaction = _transactions.get(transaction_id)
                 if transaction.status == "applied":
                     return _json(
@@ -193,13 +224,25 @@ def register_topology_tools(mcp: Any) -> None:
             )
 
             if action_lower == "analyze":
+                if payload:
+                    raise ValueError("analyze does not accept payload fields")
                 return _json(analysis)
 
             if action_lower == "query":
+                query_payload = TopologyQueryPayload.model_validate(
+                    {
+                        **{
+                            key: value
+                            for key, value in payload.items()
+                            if key != "class"
+                        },
+                        "class_": payload.get("class"),
+                    }
+                )
                 nodes = analysis["graph"].get("@graph", [])
-                semantic_id = payload.get("id")
-                ontology_class = payload.get("class")
-                predicate = payload.get("relation")
+                semantic_id = query_payload.id
+                ontology_class = query_payload.class_
+                predicate = query_payload.relation
                 matches = []
                 for node in nodes:
                     if semantic_id and node.get("@id") != semantic_id:
@@ -253,6 +296,8 @@ def register_topology_tools(mcp: Any) -> None:
                     }
                 )
 
+            if payload:
+                raise ValueError("export does not accept payload fields")
             turtle = _engine.to_turtle(analysis["graph"])
             sidecars = _bridge.write_sidecars(snapshot, analysis["graph"], turtle)
             return _json(
@@ -269,10 +314,28 @@ def register_topology_tools(mcp: Any) -> None:
             return _json(
                 {
                     "success": False,
-                    "error": "Invalid topology change document",
+                    "error_code": "TOPOLOGY_PAYLOAD_INVALID",
+                    "stage": action_lower,
+                    "retryable": False,
+                    "error": "Invalid action-specific topology payload",
                     "details": exc.errors(include_url=False),
+                    "suggested_action": (
+                        "Provide only the fields required by this topology action."
+                    ),
                 }
             )
         except Exception as exc:
             logger.exception("Topology action '%s' failed", action_lower)
-            return _json({"success": False, "error": str(exc)})
+            return _json(
+                {
+                    "success": False,
+                    "error_code": "TOPOLOGY_OPERATION_FAILED",
+                    "stage": action_lower,
+                    "retryable": False,
+                    "error": str(exc),
+                    "suggested_action": (
+                        "Inspect the drawing revision and action-specific payload "
+                        "before retrying."
+                    ),
+                }
+            )
