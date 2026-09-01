@@ -335,6 +335,18 @@ are non-plot. Complete `<drawing>.topology.jsonld` and
 `<drawing>.topology.ttl` sidecars are written to the configured export directory
 after apply or export.
 
+Room creation expands into one semantic room-boundary operation plus explicit
+physical-wall operations before preview. Coincident compatible centerlines are
+normalized direction-independently using a 0.01 mm comparison grid. Shared walls
+are created once and persist `room_ids` in XData schema version 2. The graph
+exports `top:boundedBy` from each room and `top:bounds` from the wall.
+
+The 0.01 mm wall comparison grid is separate from `snap_tolerance_mm`; changing
+topology gap healing does not change architectural wall identity. Matching
+centerlines with incompatible thickness, height, style, or resolved
+representation return `WALL_SPEC_CONFLICT` with classification
+`NEEDS_LLM_DECISION`.
+
 Supported change contracts:
 
 | Class | Required geometry | Optional/default geometry |

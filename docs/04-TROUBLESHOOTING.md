@@ -136,6 +136,13 @@ preview again.
 Create/annotate the host wall before its door/window in the same change document.
 `offset + width` must not exceed host wall length.
 
+### WALL_SPEC_CONFLICT for a shared partition
+
+The same normalized centerline was requested with incompatible thickness,
+height, style, or representation. This is an architectural decision, not a snap
+error. Do not increase `snap_tolerance_mm`. Make the wall specifications agree or
+move one centerline, then create a fresh preview.
+
 ### Post-apply validation failed
 
 The bridge closes the AutoCAD undo mark, performs one grouped undo, and waits for
@@ -223,6 +230,6 @@ uv run --extra docs mkdocs build --strict
 npx -y @modelcontextprotocol/inspector uv run python src/server.py
 ```
 
-The current verified suite contains 267 tests. The repository also has
+The current verified suite contains 286 tests. The repository also has
 pre-existing whole-tree Ruff findings, so lint changed files rather than applying
 an unreviewed global autofix.

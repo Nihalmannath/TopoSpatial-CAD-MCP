@@ -31,6 +31,11 @@ room modification, and hosted-opening modification. Inspect requires one call.
 The complete workflow therefore remains within the requested 3–6-call budget
 without hiding validation or approval.
 
+Wall counts are also explicit now. The adjacent-two-room regression previews
+two semantic room boundaries and seven physical wall operations; apply receives
+the same seven operations. Previously, preview showed two room operations while
+the CAD bridge silently manufactured eight walls during apply.
+
 ## Local topology work
 
 With the old tool, analyze and preview each rebuild topology. With
@@ -67,4 +72,3 @@ The benchmark does not remove:
 - rollback on failure,
 - atomic sidecars, or
 - agent access to detailed/debug output when needed.
-

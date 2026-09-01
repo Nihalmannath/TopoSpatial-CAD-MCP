@@ -18,6 +18,7 @@ from .models import (
     EntitySnapshot,
     TopologyChange,
 )
+from .wall_network import normalize_wall_network
 
 Point2D = Tuple[float, float]
 
@@ -234,6 +235,8 @@ class TopologyEngine:
                 ("group_id", "cad:groupId"),
                 ("host_wall_id", "cad:hostWall"),
                 ("parent_id", "cad:parent"),
+                ("room_ids", "cad:boundingRooms"),
+                ("aliases", "cad:aliases"),
                 ("representation", "cad:representation"),
             ):
                 value = semantic.get(source_key)
@@ -473,6 +476,7 @@ class TopologyEngine:
         room_shapes: Dict[str, Any] = {}
         element_shapes: Dict[str, Any] = {}
         nodes_by_id = {node["@id"]: node for node in nodes}
+        wall_rooms: Dict[str, List[str]] = {}
 
         for node in nodes:
             semantic_id = node["@id"]
@@ -501,6 +505,25 @@ class TopologyEngine:
                 # with a JSON-LD relationship list during serialization.
                 relations.add((semantic_id, "top:isPartOf", host))
 
+            if node.get("@type") == "top:Wall":
+                bounding_rooms = node.get("cad:boundingRooms", [])
+                if not isinstance(bounding_rooms, list):
+                    bounding_rooms = []
+                room_ids = sorted(
+                    {
+                        str(room_id)
+                        for room_id in bounding_rooms
+                        if str(room_id) in room_shapes or str(room_id) in nodes_by_id
+                    }
+                )
+                if parent and str(parent) not in room_ids:
+                    room_ids.append(str(parent))
+                    room_ids.sort()
+                wall_rooms[semantic_id] = room_ids
+                for room_id in room_ids:
+                    relations.add((room_id, "top:boundedBy", semantic_id))
+                    relations.add((semantic_id, "top:bounds", room_id))
+
         for room_id, room in room_shapes.items():
             for element_id, element in element_shapes.items():
                 if element_id == room_id:
@@ -519,6 +542,12 @@ class TopologyEngine:
                     relations.add((left_id, "top:adjacentTo", right_id))
                     relations.add((right_id, "top:adjacentTo", left_id))
 
+        for room_ids in wall_rooms.values():
+            for index, left_id in enumerate(room_ids):
+                for right_id in room_ids[index + 1 :]:
+                    relations.add((left_id, "top:adjacentTo", right_id))
+                    relations.add((right_id, "top:adjacentTo", left_id))
+
         for node in nodes:
             if node.get("@type") != "top:Door":
                 continue
@@ -531,6 +560,11 @@ class TopologyEngine:
                 if room_shape.boundary.distance(door_shape)
                 <= self.max_opening_gap_mm / 2.0
             ]
+            host_id = node.get("cad:hostWall") or node.get("cad:geometry", {}).get(
+                "host_wall_id"
+            )
+            touching_rooms.extend(wall_rooms.get(str(host_id), []))
+            touching_rooms = sorted(set(touching_rooms))
             for index, left_id in enumerate(touching_rooms):
                 for right_id in touching_rooms[index + 1 :]:
                     relations.add((left_id, "top:connectsTo", right_id))
@@ -627,7 +661,6 @@ class TopologyEngine:
             for candidate in analysis.get("candidates", [])
         }
         operations: List[Dict[str, Any]] = []
-        diff: List[Dict[str, Any]] = []
         warnings: List[str] = []
 
         for change in document.changes:
@@ -638,13 +671,15 @@ class TopologyEngine:
             elif change.op == "update":
                 planned = [self._plan_update(change, nodes)]
             else:
-                planned = [self._plan_delete(change, nodes)]
+                planned = self._plan_delete(change, nodes)
             operations.extend(planned)
-            diff.extend(self._operation_diff(item) for item in planned)
             for operation in planned:
                 warnings.extend(operation.get("warnings", []))
 
+        operations, network_warnings = normalize_wall_network(operations, nodes)
+        warnings.extend(network_warnings)
         self._validate_operation_hosts(operations, nodes)
+        diff = [self._operation_diff(item) for item in operations]
         return operations, diff, warnings
 
     def _plan_annotation(
@@ -870,12 +905,15 @@ class TopologyEngine:
         if change.geometry is not None:
             geometry = self.validate_geometry(ontology_class, change.geometry)
         old_handles = list(node.get("cad:handles", []))
+        previous_wall_ids: List[str] = []
         if ontology_class == "top:Room":
             child_ids = {
                 semantic_id
                 for semantic_id, child in nodes.items()
-                if child.get("cad:parent") == change.semantic_id
+                if child.get("@type") == "top:Wall"
+                and change.semantic_id in self._wall_room_ids(child)
             }
+            previous_wall_ids = sorted(child_ids)
             hosted = [
                 dependent_id
                 for dependent_id, dependent in nodes.items()
@@ -886,9 +924,7 @@ class TopologyEngine:
                     "Room geometry cannot be updated while its walls host openings: "
                     + ", ".join(sorted(hosted))
                 )
-            for child_id in sorted(child_ids):
-                old_handles.extend(nodes[child_id].get("cad:handles", []))
-        return {
+        operation = {
             "kind": "replace_managed",
             "semantic_id": change.semantic_id,
             "ontology_class": ontology_class,
@@ -903,10 +939,26 @@ class TopologyEngine:
             ),
             "old_handles": sorted(set(old_handles)),
         }
+        if previous_wall_ids:
+            operation["previous_wall_ids"] = previous_wall_ids
+        return operation
+
+    @staticmethod
+    def _wall_room_ids(node: Dict[str, Any]) -> set[str]:
+        """Read version-2 multi-room relations with legacy parent fallback."""
+        room_ids = node.get("cad:boundingRooms", [])
+        result = (
+            {str(item) for item in room_ids if item}
+            if isinstance(room_ids, list)
+            else set()
+        )
+        if node.get("cad:parent"):
+            result.add(str(node["cad:parent"]))
+        return result
 
     def _plan_delete(
         self, change: TopologyChange, nodes: Dict[str, Dict[str, Any]]
-    ) -> Dict[str, Any]:
+    ) -> List[Dict[str, Any]]:
         assert change.semantic_id is not None
         node = nodes.get(change.semantic_id)
         if node is None:
@@ -914,11 +966,41 @@ class TopologyEngine:
         if not node.get("cad:managed"):
             raise ValueError("Refusing to delete untagged or legacy CAD geometry")
 
-        owned_ids = {
-            semantic_id
-            for semantic_id, child in nodes.items()
-            if child.get("cad:parent") == change.semantic_id
-        }
+        shared_wall_updates: List[Dict[str, Any]] = []
+        owned_ids: set[str] = set()
+        if node.get("@type") == "top:Room":
+            for semantic_id, child in nodes.items():
+                if child.get("@type") != "top:Wall":
+                    continue
+                room_ids = self._wall_room_ids(child)
+                if change.semantic_id not in room_ids:
+                    continue
+                remaining = sorted(room_ids - {change.semantic_id})
+                if remaining:
+                    shared_wall_updates.append(
+                        {
+                            "kind": "update_wall_rooms",
+                            "semantic_id": semantic_id,
+                            "ontology_class": "top:Wall",
+                            "handles": list(child.get("cad:handles", [])),
+                            "bounding_room_ids": remaining,
+                            "aliases": sorted(
+                                alias
+                                for alias in child.get("cad:aliases", [])
+                                if not str(alias).startswith(
+                                    f"{change.semantic_id}:wall:"
+                                )
+                            ),
+                        }
+                    )
+                else:
+                    owned_ids.add(semantic_id)
+        else:
+            owned_ids = {
+                semantic_id
+                for semantic_id, child in nodes.items()
+                if child.get("cad:parent") == change.semantic_id
+            }
         host_ids = owned_ids | {change.semantic_id}
         dependent_ids = {
             semantic_id
@@ -939,13 +1021,17 @@ class TopologyEngine:
             for semantic_id in delete_ids
             for handle in nodes[semantic_id].get("cad:handles", [])
         }
-        return {
-            "kind": "delete_managed",
-            "semantic_id": change.semantic_id,
-            "handles": sorted(handles),
-            "deleted_semantic_ids": sorted(delete_ids),
-            "cascade": change.cascade,
-        }
+        return [
+            {
+                "kind": "delete_managed",
+                "semantic_id": change.semantic_id,
+                "ontology_class": node.get("@type"),
+                "handles": sorted(handles),
+                "deleted_semantic_ids": sorted(delete_ids),
+                "cascade": change.cascade,
+            },
+            *shared_wall_updates,
+        ]
 
     def _validate_operation_hosts(
         self,
@@ -977,25 +1063,6 @@ class TopologyEngine:
                 if not isinstance(semantic_id, str):
                     raise ValueError("Wall operation is missing a semantic ID")
                 wall_geometry[semantic_id] = operation["geometry"]
-                continue
-
-            if ontology_class == "top:Room" and kind in {
-                "create_managed",
-                "replace_managed",
-            }:
-                if not isinstance(semantic_id, str):
-                    raise ValueError("Room operation is missing a semantic ID")
-                room = operation["geometry"]
-                width = float(room["clear_width"])
-                depth = float(room["clear_depth"])
-                thickness = float(room["wall_thickness"])
-                for index, length in enumerate(
-                    (width + 2 * thickness, depth + 2 * thickness) * 2,
-                    start=1,
-                ):
-                    wall_geometry[f"{semantic_id}:wall:{index}"] = {
-                        "length": length,
-                    }
                 continue
 
             if ontology_class not in {"top:Door", "top:Window"} or kind not in {

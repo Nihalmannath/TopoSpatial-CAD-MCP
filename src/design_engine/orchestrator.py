@@ -13,6 +13,7 @@ from typing import Any, Dict, Iterable, List, Sequence, Tuple
 from core.config import get_config
 from topology_engine import ChangeDocument, TopologyEngine, TransactionStore
 from topology_engine.cad_bridge import CADTopologyBridge
+from topology_engine.wall_network import centerline_key, wall_spec_key
 
 from .cache import AnalysisCache, ResultStore
 from .models import (
@@ -583,7 +584,20 @@ class DesignOrchestrator:
         }
         created_ids: Counter[str] = Counter()
         wall_signatures: Dict[Tuple[Any, ...], str] = {}
+        wall_centerlines: Dict[Tuple[Any, ...], Tuple[str, Tuple[Any, ...]]] = {}
         room_shapes: List[Tuple[str, Any]] = []
+
+        for node in analysis.get("graph", {}).get("@graph", []):
+            if node.get("@type") != "top:Wall":
+                continue
+            try:
+                line = tuple(centerline_key(node.get("cad:geometry", {})))
+                spec = wall_spec_key(node.get("cad:geometry", {})) + (
+                    str(node.get("cad:representation", "standard")),
+                )
+            except (TypeError, ValueError):
+                continue
+            wall_centerlines[line] = (str(node.get("@id")), spec)
 
         for operation in operations:
             semantic_id = str(operation.get("semantic_id", ""))
@@ -602,21 +616,42 @@ class DesignOrchestrator:
                     )
             geometry = operation.get("geometry", {})
             if kind == "create_managed" and ontology_class == "top:Wall":
-                signature = self._wall_signature(geometry)
-                if signature in wall_signatures:
+                representation = str(operation.get("representation", "standard"))
+                signature = self._wall_signature(geometry, representation)
+                line = self._wall_centerline_signature(geometry)
+                spec = wall_spec_key(geometry) + (representation,)
+                prior = wall_centerlines.get(line)
+                if prior is not None and prior[1] != spec:
+                    problems.append(
+                        self._problem(
+                            "WALL_SPEC_CONFLICT",
+                            "NEEDS_LLM_DECISION",
+                            (
+                                f"Walls '{prior[0]}' and '{semantic_id}' share a "
+                                "centerline but have incompatible thickness, height, "
+                                "style, or representation specifications."
+                            ),
+                            [prior[0], semantic_id],
+                        )
+                    )
+                elif signature in wall_signatures or prior is not None:
+                    duplicate_id = wall_signatures.get(signature) or (
+                        prior[0] if prior is not None else semantic_id
+                    )
                     problems.append(
                         self._problem(
                             "DUPLICATE_WALL",
                             "NEEDS_LLM_DECISION",
                             (
-                                f"Walls '{wall_signatures[signature]}' and "
+                                f"Walls '{duplicate_id}' and "
                                 f"'{semantic_id}' have identical centerlines."
                             ),
-                            [wall_signatures[signature], semantic_id],
+                            [duplicate_id, semantic_id],
                         )
                     )
                 else:
                     wall_signatures[signature] = semantic_id
+                    wall_centerlines[line] = (semantic_id, spec)
             if kind == "create_managed" and ontology_class == "top:Room":
                 shape = self._room_shape(geometry)
                 if shape is not None:
@@ -674,11 +709,18 @@ class DesignOrchestrator:
         )
 
     @staticmethod
-    def _wall_signature(geometry: Dict[str, Any]) -> Tuple[Any, ...]:
-        start = tuple(round(float(value), 6) for value in geometry.get("start", [])[:2])
-        end = tuple(round(float(value), 6) for value in geometry.get("end", [])[:2])
-        ordered = tuple(sorted((start, end)))
-        return ordered + (round(float(geometry.get("thickness", 0.0)), 6),)
+    def _wall_signature(
+        geometry: Dict[str, Any], representation: str = "standard"
+    ) -> Tuple[Any, ...]:
+        return (
+            tuple(centerline_key(geometry))
+            + wall_spec_key(geometry)
+            + (representation,)
+        )
+
+    @staticmethod
+    def _wall_centerline_signature(geometry: Dict[str, Any]) -> Tuple[Any, ...]:
+        return tuple(centerline_key(geometry))
 
     @staticmethod
     def _room_shape(geometry: Dict[str, Any]) -> Any | None:
@@ -780,7 +822,12 @@ class DesignOrchestrator:
                     for item in value[: budget.max_neighbors]
                     if isinstance(item, dict) and item.get("@id")
                 ]
-            elif key in {"cad:hostWall", "cad:parent"}:
+            elif key in {
+                "cad:hostWall",
+                "cad:parent",
+                "cad:boundingRooms",
+                "cad:aliases",
+            }:
                 relationships[key] = value
         if relationships:
             result["relationships"] = relationships
@@ -798,6 +845,18 @@ class DesignOrchestrator:
     def _resolve_entity(entity: str, nodes: Sequence[Dict[str, Any]]) -> str:
         if any(node.get("@id") == entity for node in nodes):
             return entity
+        alias_matches = [
+            str(node.get("@id"))
+            for node in nodes
+            if entity in node.get("cad:aliases", [])
+        ]
+        if len(alias_matches) == 1:
+            return alias_matches[0]
+        if len(alias_matches) > 1:
+            raise ValueError(
+                f"Wall alias '{entity}' resolves to multiple semantic IDs: "
+                f"{', '.join(sorted(alias_matches))}"
+            )
         wanted = entity.strip().casefold()
         matches = [
             str(node.get("@id"))

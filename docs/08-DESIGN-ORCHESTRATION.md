@@ -133,6 +133,24 @@ submit all approved walls, doors, and windows in the same `changes` array.
 The local planner orders the host wall before the door and reports
 `DEPENDENCY_ORDER_NORMALIZED` as `AUTO_FIXABLE`. CAD remains unchanged.
 
+### Shared-room wall normalization
+
+Room changes are expanded during local planning, not during CAD apply. The room
+remains one non-plot semantic boundary while its physical boundaries join the
+same wall-requirement set as explicit wall changes. Compatible centerlines are
+direction-normalized on a 0.01 mm grid and merged before the execution plan is
+created.
+
+Two adjacent 4000 × 4000 mm clear rooms with 200 mm walls therefore preview two
+room boundaries and seven physical walls. Their common partition has one stable
+semantic ID, both room IDs in XData, and `top:boundedBy` relationships from both
+rooms. A door may reference either legacy room-wall alias; the planner rewrites
+it to the normalized shared host without another model call.
+
+The compiler does not hide incompatible decisions. A coincident centerline with
+different thickness, height, style, or representation produces
+`WALL_SPEC_CONFLICT` / `NEEDS_LLM_DECISION` and no transaction is applied.
+
 ### 3. Stop for approval, then apply
 
 ```json
@@ -200,7 +218,7 @@ Problems are classified as:
 
 - `AUTO_FIXABLE`: safely normalized locally, such as dependency order.
 - `NEEDS_LLM_DECISION`: architectural conflict such as duplicate walls or
-  overlapping proposed rooms.
+  overlapping proposed rooms, or incompatible shared-wall specifications.
 - `FATAL`: invalid or conflicting semantic identity/geometry.
 
 Errors include `code`, `stage`, `retryable`, `details`, `suggested_action`, and
@@ -230,4 +248,3 @@ Metrics include MCP calls, CAD operations, topology operations, retries,
 failures, response bytes, execution time, entities inspected, and entities
 modified. The server returns model token usage as unknown rather than inventing
 it.
-

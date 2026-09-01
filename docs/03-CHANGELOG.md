@@ -46,6 +46,14 @@
 - Confirmed `manage_files` `delete` action for exact closed `.dwg`/`.dxf`
   outputs. It optionally includes matching topology sidecars and uses the
   Windows Recycle Bin.
+- Deterministic shared-wall compiler that expands room boundaries during
+  planning, merges compatible implicit/explicit requirements, assigns stable
+  geometry-derived wall IDs, and rewrites legacy opening hosts.
+- XData schema version 2 multi-room wall ownership plus `top:boundedBy` and
+  `top:bounds` JSON-LD/Turtle relationships.
+- Shared-wall regression coverage for adjacent rooms, reversed/noisy geometry,
+  specification conflicts, explicit/implicit unification, opening hosts,
+  representation selection, apply counts, stable IDs, and re-analysis.
 
 ### Changed
 
@@ -69,8 +77,12 @@
   sidecars.
 - Completed transaction reapply is explicitly idempotent.
 - Managed clear-room boundaries suppress duplicate wall-envelope candidates.
+- Room apply now creates only the semantic boundary; every physical wall is an
+  explicit previewed operation from the normalized wall network.
 - Opening membership uses `top:isPartOf`; `cad:hostWall` remains a scalar planner
   identifier.
+- Shared walls persist multiple bounding rooms while single-room walls retain
+  legacy `parent_id` compatibility.
 - CAD screenshot capture now uses the live COM HWND, supports ACA's MFC window
   class, renders obscured windows with `PrintWindow`, and handles high-DPI bounds.
 - **Table Entity Support**: Added native table creation through `draw_entities`
@@ -88,6 +100,10 @@
 - Agents repeatedly rebuilding the unchanged topology graph between inspect,
   context, and preview calls.
 - Opening-before-host ordering in otherwise valid multi-object design batches.
+- Duplicate physical and semantic walls created independently by adjacent room
+  operations.
+- Explicit walls and implicit room walls bypassing one another during duplicate
+  validation.
 - Post-apply JSON-LD serialization failure caused by assigning both a scalar and
   relation list to `cad:hostWall`.
 - Rollback returning before AutoCAD completed its asynchronous undo command.
@@ -107,7 +123,7 @@
 - Example output: 4 `AecDbWall`, 1 `AecDbDoor`, 2 `AecDbWindow`, one semantic
   room boundary, 8 XData-tagged objects, 8 graph nodes, 14 relations, and zero
   duplicate candidates.
-- Full suite: **267 tests passed** on 2026-09-01.
+- Full suite: **286 tests passed** on 2026-09-01.
 - Schema, cache, context pagination, compact response, retry, repeated-failure,
   cancellation, rollback, and 3-call create/room/opening workflow regressions.
 

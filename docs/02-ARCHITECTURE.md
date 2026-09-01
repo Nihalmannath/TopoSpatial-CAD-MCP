@@ -139,6 +139,37 @@ the standard-entity adapter. Explicit `native_aec` requests fail safely during
 preview when those requirements are not met. The resolved value is stored in the
 transaction and XData, so apply never makes a different representation decision.
 
+### Shared physical-wall compiler
+
+Room creation no longer hides four wall mutations inside the CAD bridge. During
+planning, each clear-interior room is retained as a semantic boundary and is
+separately expanded into four physical wall requirements. Explicit and
+room-derived requirements pass through the same deterministic wall network:
+
+```text
+rooms + explicit walls
+        ↓
+0.01 mm direction-independent centerline normalization
+        ↓
+compatible shared requirements → one stable wall ID
+incompatible specifications    → WALL_SPEC_CONFLICT
+        ↓
+explicit room boundary + explicit physical wall operations
+```
+
+The normalization tolerance is independent from topology gap healing. Wall IDs
+are SHA-256-derived from canonical centerline, physical specification, and
+requested representation, so room submission order does not alter the network.
+Legacy `<room-id>:wall:<n>` identifiers are stored as aliases and opening hosts
+are rewritten locally before validation. Reversed aliases also transform opening
+offset and door hinge orientation.
+
+XData schema version 2 stores `room_ids` on a physical wall. A single-room wall
+also retains legacy `parent_id`; shared walls use the multi-room field without a
+false single owner. Existing compatible walls are reused through an XData-only
+relationship update. Deleting one room removes only its relationship when the
+wall still bounds another room.
+
 ### Topology transaction sequence
 
 ```text
@@ -168,6 +199,8 @@ expire after `topology.transaction_ttl_seconds`.
 
 - `top:containsElement` — room-to-wall and host-wall-to-opening containment
 - `top:isPartOf` — inverse room/host membership
+- `top:boundedBy` — room-to-physical-wall boundary relationship
+- `top:bounds` — physical-wall-to-room inverse relationship
 - `top:adjacentTo` — shared room boundary adjacency
 - `top:connectsTo` — room connectivity derived through doors
 - `cad:hostWall` — scalar semantic wall identifier used by the CAD planner
@@ -223,6 +256,10 @@ The execution plan orders deterministic dependencies, such as walls before
 hosted doors/windows, and categorizes validation findings as `AUTO_FIXABLE`,
 `NEEDS_LLM_DECISION`, or `FATAL`. Only the approved transaction is passed to the
 bridge. The LLM is not placed between individual geometry operations.
+
+The topology planner also expands room walls before `ExecutionPlan` creation.
+Consequently the preview wall count, apply wall count, XData semantic wall count,
+and post-apply JSON-LD/Turtle wall count describe the same physical network.
 
 Successful mutation invalidates earlier drawing revisions and performs a full
 post-apply graph rebuild. Fine-grained graph surgery remains deferred until it

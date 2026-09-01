@@ -138,7 +138,7 @@ TopoSpatial-CAD-MCP/
 ## Key Commands
 
 ```powershell
-uv run pytest -q                            # Run all 267 tests
+uv run pytest -q                            # Run all 286 tests
 uv run ruff check <changed-files>           # Lint files changed in your branch
 uv run ruff format <changed-files>          # Format files changed in your branch
 uv run --extra docs mkdocs build --strict   # Validate documentation

@@ -19,7 +19,7 @@
 - **9 Unified MCP Tools**
 - **4 CAD Apps**: AutoCAD, ZWCAD, GstarCAD, BricsCAD
 - **Native ACA**: walls, doors, windows, styles, and anchors
-- **267 Tests** passing
+- **286 Tests** passing
 - **Python 3.10+** | FastMCP 3.1+
 
 ## I Want To...

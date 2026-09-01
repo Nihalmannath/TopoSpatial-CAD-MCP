@@ -36,10 +36,13 @@ TopoSpatial-CAD MCP constructs a rich spatial knowledge graph:
   BricsCAD.
 - **Explicit room/wall/door/window semantics** persisted in
   `TOPOSPATIAL_TOPOLOGY` XData and exported to JSON-LD and Turtle.
+- **Shared-wall compilation** expands room boundaries before preview, merges
+  compatible coincident partitions, and stores one wall identity with multiple
+  bounding-room relationships.
 - **Preview/apply transactions** with a 10-minute default expiry, drawing
   revision checks, idempotent apply, one AutoCAD undo group, and verified
   rollback.
-- **267 automated tests passing** on the current Windows development setup.
+- **286 automated tests passing** on the current Windows development setup.
 
 ```
 ┌────────────────────────────────────────────────────────┐
@@ -139,6 +142,14 @@ Every analysis creates a SHA-256 geometric drawing fingerprint (`revision = AF84
 
 ### 6. Clear Interior Dimension Contract
 In architectural practice, room dimensions always refer to **clear interior usable space**. TopoSpatial-CAD MCP enforces this contract at the core API level: requesting a 5000 × 4000 mm bedroom automatically calculates wall thickness offsets (e.g. outer footprint 5400 × 4400 mm with 200 mm walls).
+
+Room boundaries and physical walls remain separate. Before preview, the wall
+network compiler expands every proposed room into explicit wall requirements,
+normalizes reversed/noisy centerlines on a 0.01 mm grid, and creates each
+compatible shared partition once. A shared wall persists all bounding room IDs
+in XData schema version 2 and exports `top:boundedBy`/`top:bounds` relations.
+Conflicting thickness, height, style, or representation returns
+`WALL_SPEC_CONFLICT` instead of silently merging walls.
 
 ---
 
@@ -316,7 +327,7 @@ there is intentionally no `delete all` or glob operation.
 ## Verification & Testing
 
 ```powershell
-# Run the full test suite (267 tests at this revision)
+# Run the full test suite (286 tests at this revision)
 uv run pytest -q
 
 # Check the files changed in your branch

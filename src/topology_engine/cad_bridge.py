@@ -13,11 +13,12 @@ from typing import Any, Dict, Iterable, List, Sequence, Tuple
 from core.config import get_config
 
 from .models import DrawingSnapshot, EntitySnapshot
+from .wall_network import room_wall_segments
 
 logger = logging.getLogger(__name__)
 
 XDATA_APP = "TOPOSPATIAL_TOPOLOGY"
-XDATA_SCHEMA_VERSION = "1"
+XDATA_SCHEMA_VERSION = "2"
 ROOM_LAYER = "AI-ROOMS"
 WALL_LAYER = "AI-WALLS"
 DOOR_LAYER = "AI-DOORS"
@@ -352,9 +353,6 @@ class CADTopologyBridge:
                 semantic_id = operation.get("semantic_id")
                 if ontology_class == "top:Wall" and semantic_id:
                     wall_representations[semantic_id] = selected
-                elif ontology_class == "top:Room" and semantic_id:
-                    for index in range(1, 5):
-                        wall_representations[f"{semantic_id}:wall:{index}"] = selected
                 continue
             if ontology_class not in {"top:Door", "top:Window"}:
                 continue
@@ -437,6 +435,24 @@ class CADTopologyBridge:
                 semantic["label"] = operation["label"]
                 self.write_xdata(document, entity, semantic)
             return {"modified_handles": operation["handles"], "created": []}
+        if kind == "update_wall_rooms":
+            for handle in operation["handles"]:
+                entity = document.HandleToObject(handle)
+                semantic = self.read_xdata(entity)
+                semantic["room_ids"] = sorted(
+                    set(operation.get("bounding_room_ids", []))
+                )
+                semantic["aliases"] = sorted(set(operation.get("aliases", [])))
+                semantic.pop("parent_id", None)
+                if len(semantic["room_ids"]) == 1:
+                    semantic["parent_id"] = semantic["room_ids"][0]
+                semantic["group_id"] = (
+                    semantic["room_ids"][0]
+                    if len(semantic["room_ids"]) == 1
+                    else semantic.get("semantic_id")
+                )
+                self.write_xdata(document, entity, semantic)
+            return {"modified_handles": operation["handles"], "created": []}
         if kind == "create_room_boundary":
             created = self._create_room_boundary(
                 adapter,
@@ -490,6 +506,8 @@ class CADTopologyBridge:
                 semantic_id,
                 label,
                 geometry,
+                bounding_room_ids=operation.get("bounding_room_ids"),
+                aliases=operation.get("aliases"),
                 representation=representation,
             )
         if ontology_class == "top:Door":
@@ -524,7 +542,6 @@ class CADTopologyBridge:
         origin = tuple(geometry["origin"])
         width = float(geometry["clear_width"])
         depth = float(geometry["clear_depth"])
-        thickness = float(geometry["wall_thickness"])
         rotation = float(geometry.get("rotation_deg", 0.0))
         local_boundary = [(0.0, 0.0), (width, 0.0), (width, depth), (0.0, depth)]
         boundary = [
@@ -542,27 +559,6 @@ class CADTopologyBridge:
             geometry=room_geometry,
         )
 
-        wall_specs = self._room_wall_specs(width, depth, thickness)
-        for index, (local_start, local_end) in enumerate(wall_specs, start=1):
-            wall_id = f"{semantic_id}:wall:{index}"
-            wall_geometry = {
-                "start": list(self._transform(local_start, origin, rotation)),
-                "end": list(self._transform(local_end, origin, rotation)),
-                "thickness": thickness,
-                "height": float(geometry.get("wall_height", 3000.0)),
-                "style": str(geometry.get("wall_style", "Standard")),
-            }
-            created.extend(
-                self._create_wall(
-                    adapter,
-                    document,
-                    wall_id,
-                    f"{label} Wall {index}".strip(),
-                    wall_geometry,
-                    parent_id=semantic_id,
-                    representation=representation,
-                )
-            )
         return created
 
     def _create_room_boundary(
@@ -612,6 +608,8 @@ class CADTopologyBridge:
         label: str,
         geometry: Dict[str, Any],
         parent_id: str | None = None,
+        bounding_room_ids: Sequence[str] | None = None,
+        aliases: Sequence[str] | None = None,
         representation: str = "auto",
     ) -> List[Dict[str, Any]]:
         self._ensure_layer(adapter, document, WALL_LAYER, "white")
@@ -640,17 +638,20 @@ class CADTopologyBridge:
                 lineweight=0,
                 _skip_refresh=True,
             )
+        room_ids = sorted(set(bounding_room_ids or ([parent_id] if parent_id else [])))
         payload = {
             "semantic_id": semantic_id,
             "ontology_class": "top:Wall",
             "label": label,
-            "group_id": parent_id or semantic_id,
+            "group_id": room_ids[0] if len(room_ids) == 1 else semantic_id,
             "managed": True,
             "geometry": geometry,
             "representation": actual_representation,
+            "room_ids": room_ids,
+            "aliases": sorted(set(aliases or [])),
         }
-        if parent_id:
-            payload["parent_id"] = parent_id
+        if len(room_ids) == 1:
+            payload["parent_id"] = room_ids[0]
         self.write_xdata(document, document.HandleToObject(handle), payload)
         return [
             {
@@ -930,12 +931,16 @@ class CADTopologyBridge:
         width: float, depth: float, thickness: float
     ) -> List[Tuple[Tuple[float, float], Tuple[float, float]]]:
         """Return outward wall centerlines around a clear-interior rectangle."""
-        half = thickness / 2.0
         return [
-            ((-thickness, -half), (width + thickness, -half)),
-            ((width + half, -thickness), (width + half, depth + thickness)),
-            ((width + thickness, depth + half), (-thickness, depth + half)),
-            ((-half, depth + thickness), (-half, -thickness)),
+            (tuple(item["start"]), tuple(item["end"]))
+            for item in room_wall_segments(
+                {
+                    "origin": [0.0, 0.0],
+                    "clear_width": width,
+                    "clear_depth": depth,
+                    "wall_thickness": thickness,
+                }
+            )
         ]
 
     @staticmethod
@@ -991,6 +996,13 @@ class CADTopologyBridge:
             payload["geometry"] = operation["geometry"]
         if operation.get("representation") in {"native_aec", "standard"}:
             payload["representation"] = operation["representation"]
+        if operation.get("bounding_room_ids"):
+            room_ids = sorted(set(operation["bounding_room_ids"]))
+            payload["room_ids"] = room_ids
+            if len(room_ids) == 1:
+                payload["parent_id"] = room_ids[0]
+        if operation.get("aliases"):
+            payload["aliases"] = sorted(set(operation["aliases"]))
         return payload
 
     @staticmethod

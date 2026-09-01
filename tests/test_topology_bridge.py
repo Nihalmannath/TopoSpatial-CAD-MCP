@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -161,6 +162,72 @@ def test_room_walls_produce_requested_clear_and_exterior_dimensions() -> None:
     assert max(ys) == pytest.approx(4200)
     assert max(xs) - min(xs) == pytest.approx(5400)
     assert max(ys) - min(ys) == pytest.approx(4400)
+
+
+def test_room_bridge_creates_only_semantic_boundary_after_planning_expansion() -> None:
+    """Room apply must not manufacture physical walls hidden from preview."""
+    bridge = CADTopologyBridge()
+    entity = FakeEntity("R1")
+    document = FakeDocument(entity)
+    adapter = MagicMock()
+    adapter.list_layers.return_value = []
+    adapter.create_layer.return_value = True
+    adapter.draw_polyline.return_value = "R1"
+
+    created = bridge._create_room(
+        adapter,
+        document,
+        "urn:room:solo",
+        "Solo",
+        {
+            "origin": [0, 0],
+            "clear_width": 5000,
+            "clear_depth": 4000,
+            "wall_thickness": 200,
+        },
+        representation="standard",
+    )
+
+    assert created == [
+        {
+            "semantic_id": "urn:room:solo",
+            "ontology_class": "top:Room",
+            "handles": ["R1"],
+        }
+    ]
+    assert adapter.draw_polyline.call_count == 1
+
+
+def test_wall_xdata_persists_multiple_bounding_rooms() -> None:
+    bridge = CADTopologyBridge()
+    entity = FakeEntity("W1")
+    document = FakeDocument(entity)
+    adapter = MagicMock()
+    adapter.list_layers.return_value = []
+    adapter.create_layer.return_value = True
+    adapter.draw_polyline.return_value = "W1"
+
+    bridge._create_wall(
+        adapter,
+        document,
+        "urn:wall:shared",
+        "Shared Wall",
+        {
+            "start": [4100, -200],
+            "end": [4100, 4200],
+            "thickness": 200,
+            "height": 3000,
+            "style": "Standard",
+        },
+        bounding_room_ids=["urn:room:b", "urn:room:a"],
+        aliases=["urn:room:a:wall:2", "urn:room:b:wall:4"],
+        representation="standard",
+    )
+
+    semantic = bridge.read_xdata(entity)
+    assert semantic["room_ids"] == ["urn:room:a", "urn:room:b"]
+    assert "parent_id" not in semantic
+    assert semantic["schema_version"] == "2"
 
 
 @pytest.mark.parametrize(
