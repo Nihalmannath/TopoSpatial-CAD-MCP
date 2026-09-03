@@ -35,13 +35,15 @@ def test_adapter_context_is_thread_local() -> None:
     assert sorted(values) == ["a", "b"]
 
 
-def test_adapter_registry_does_not_share_adapters_between_threads(monkeypatch) -> None:
+def test_adapter_registry_shares_single_adapter_between_threads(monkeypatch) -> None:
+    """Requirement 6 & 11: AdapterRegistry coordinates across threads and shares a single adapter."""
     registry = AdapterRegistry()
     barrier = threading.Barrier(2)
     adapters = []
+    detect_calls = []
 
-    def fake_detect(only_if_running=False):
-        del only_if_running
+    def fake_detect(only_if_running=True, allow_launch=False):
+        detect_calls.append(threading.get_ident())
         registry._adapter = FakeAdapter(threading.get_ident())
         registry._cad_type = "autocad"
 
@@ -49,7 +51,7 @@ def test_adapter_registry_does_not_share_adapters_between_threads(monkeypatch) -
 
     def worker():
         barrier.wait()
-        adapters.append(registry.get_adapter())
+        adapters.append(registry.get_adapter(only_if_running=True))
 
     threads = [threading.Thread(target=worker) for _ in range(2)]
     for thread in threads:
@@ -58,5 +60,7 @@ def test_adapter_registry_does_not_share_adapters_between_threads(monkeypatch) -
         thread.join()
 
     assert len(adapters) == 2
-    assert adapters[0] is not adapters[1]
-    assert adapters[0].owner != adapters[1].owner
+    # Both threads receive the SAME coordinated adapter instance
+    assert adapters[0] is adapters[1]
+    # Auto-detection is executed only once, preventing duplicate adapter/process creation
+    assert len(detect_calls) == 1

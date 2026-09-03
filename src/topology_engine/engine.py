@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import math
@@ -129,7 +130,7 @@ class TopologyEngine:
             ]
 
         for node in nodes:
-            if node.get("@type") != "top:Room":
+            if node.get("@type") not in {"top:Room", "top:Space"}:
                 continue
             boundary = node.get("cad:geometry", {}).get("boundary")
             if not boundary:
@@ -137,7 +138,7 @@ class TopologyEngine:
             try:
                 node["top:hasArea"] = self._topologic_face_area(
                     boundary,
-                    ontology_class="top:Room",
+                    ontology_class=node.get("@type"),
                     label=node.get("rdfs:label"),
                 )
                 node["top:hasUnit"] = "mm"
@@ -242,6 +243,8 @@ class TopologyEngine:
                 value = semantic.get(source_key)
                 if value not in (None, ""):
                     node[target_key] = value
+            if "properties" in semantic and isinstance(semantic["properties"], dict):
+                node["cad:properties"] = copy.deepcopy(semantic["properties"])
             nodes.append(node)
         return nodes
 
@@ -481,7 +484,7 @@ class TopologyEngine:
         for node in nodes:
             semantic_id = node["@id"]
             geometry = node.get("cad:geometry", {})
-            if node.get("@type") == "top:Room" and geometry.get("boundary"):
+            if node.get("@type") in {"top:Room", "top:Space"} and geometry.get("boundary"):
                 room_shapes[semantic_id] = _Polygon(geometry["boundary"])
             if node.get("@type") in {"top:Door", "top:Window"}:
                 shape = self._opening_shape(node, nodes_by_id, _LineString)
@@ -504,6 +507,13 @@ class TopologyEngine:
                 # the ontology predicate instead of overwriting that scalar
                 # with a JSON-LD relationship list during serialization.
                 relations.add((semantic_id, "top:isPartOf", host))
+
+            if node.get("@type") == "top:Connection":
+                from_id = geometry.get("from_space_id")
+                to_id = geometry.get("to_space_id")
+                if from_id and to_id:
+                    relations.add((from_id, "top:connectsTo", to_id))
+                    relations.add((to_id, "top:connectsTo", from_id))
 
             if node.get("@type") == "top:Wall":
                 bounding_rooms = node.get("cad:boundingRooms", [])
@@ -1134,7 +1144,17 @@ class TopologyEngine:
                 raise ValueError(f"geometry.{name} must be positive")
             return float(raw)
 
-        if ontology_class == "top:Room":
+        if ontology_class in {"top:Room", "top:Space"}:
+            if "boundary" in value:
+                boundary = value.get("boundary")
+                if not isinstance(boundary, (list, tuple)) or len(boundary) < 3:
+                    raise ValueError("geometry.boundary must be a list of at least 3 points")
+                return {
+                    "boundary": [
+                        [float(p[0]), float(p[1])]
+                        for p in boundary
+                    ]
+                }
             allowed = {
                 "origin",
                 "clear_width",
@@ -1216,6 +1236,8 @@ class TopologyEngine:
                 raise ValueError("window offset cannot be negative")
             if normalized["sill_height"] < 0:
                 raise ValueError("window sill_height cannot be negative")
+        elif ontology_class in {"top:Opening", "top:Connection", "top:SpatialIntent"}:
+            return dict(value)
         else:
             raise ValueError(f"Unsupported ontology class '{ontology_class}'")
         unknown = set(value) - allowed
@@ -1255,7 +1277,7 @@ class TopologyEngine:
         drawing_hash = hashlib.sha256(
             (snapshot.full_name or snapshot.drawing_name).encode("utf-8")
         ).hexdigest()[:20]
-        return {
+        result = {
             "@context": dict(self.CONTEXT),
             "@id": f"urn:topospatial:drawing:{drawing_hash}",
             "@type": "top:KnowledgeGraph",
@@ -1264,6 +1286,10 @@ class TopologyEngine:
             "cad:units": snapshot.units,
             "@graph": sorted(graph_nodes, key=lambda item: item["@id"]),
         }
+        from .navigation import graph_revision
+
+        result["cad:graphRevision"] = graph_revision(result)
+        return result
 
     def to_turtle(self, graph: Dict[str, Any]) -> str:
         """Serialize the supported JSON-LD subset without TopologicPy's slow path."""

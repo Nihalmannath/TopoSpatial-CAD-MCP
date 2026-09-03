@@ -9,7 +9,16 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-ONTOLOGY_CLASSES = {"top:Room", "top:Wall", "top:Door", "top:Window"}
+ONTOLOGY_CLASSES = {
+    "top:Room",
+    "top:Wall",
+    "top:Door",
+    "top:Window",
+    "top:Space",
+    "top:Opening",
+    "top:Connection",
+    "top:SpatialIntent",
+}
 
 
 @dataclass(frozen=True)

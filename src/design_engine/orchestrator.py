@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
 from core.config import get_config
+from core.exceptions import CADBusyError
 from topology_engine import ChangeDocument, TopologyEngine, TransactionStore
 from topology_engine.cad_bridge import CADTopologyBridge
 from topology_engine.wall_network import centerline_key, wall_spec_key
@@ -68,9 +69,14 @@ class DesignOrchestrator:
     def execute(self, request: DesignRequest, adapter: Any | None) -> Dict[str, Any]:
         """Execute one typed high-level action and return a compact dictionary."""
         started = time.perf_counter()
-        task_id = request.task_id or f"task_{uuid.uuid4().hex}"
-        request_data = request.model_dump(mode="json", by_alias=True)
-        request_data["task_id"] = request.task_id or "__anonymous__"
+        req_task_id = getattr(request, "task_id", None)
+        task_id = req_task_id or f"task_{uuid.uuid4().hex}"
+        request_data = (
+            request.model_dump(mode="json", by_alias=True)
+            if hasattr(request, "model_dump")
+            else dict(request)
+        )
+        request_data["task_id"] = req_task_id or "__anonymous__"
         request_key = self.failures.request_key(request_data)
         self.metrics.add(task_id, mcp_calls=1)
 
@@ -135,19 +141,20 @@ class DesignOrchestrator:
     def _dispatch(
         self, request: DesignRequest, adapter: Any, task_id: str
     ) -> Dict[str, Any]:
-        if isinstance(request, InspectDesignRequest):
+        action = getattr(request, "action", "")
+        if isinstance(request, InspectDesignRequest) or action == "inspect":
             return self._inspect(request, adapter, task_id)
-        if isinstance(request, GetContextDesignRequest):
+        if isinstance(request, GetContextDesignRequest) or action == "get_context":
             return self._get_context(request, adapter, task_id)
-        if isinstance(request, PlanDesignRequest):
+        if isinstance(request, PlanDesignRequest) or action in {"create", "modify", "validate", "preview"}:
             return self._plan(request, adapter, task_id)
-        if isinstance(request, TransactionDesignRequest):
-            if request.action == "apply":
+        if isinstance(request, TransactionDesignRequest) or action in {"apply", "cancel", "rollback"}:
+            if action == "apply":
                 return self._apply(request, adapter, task_id)
-            if request.action == "cancel":
+            if action == "cancel":
                 return self._cancel(request, task_id)
             return self._rollback(request, adapter, task_id)
-        raise ValueError(f"Unsupported design action '{request.action}'")
+        raise ValueError(f"Unsupported design action '{action}'")
 
     def _get_result(
         self, request: GetResultDesignRequest, task_id: str
@@ -969,6 +976,14 @@ class DesignOrchestrator:
             code = "DRAWING_UNITS_INVALID"
             stage = "validate"
             suggested = "Set AutoCAD INSUNITS to millimetres and preview again."
+        elif isinstance(exc, CADBusyError) or "cad_busy" in folded:
+            code = "CAD_BUSY"
+            stage = action
+            retryable = False
+            suggested = (
+                "AutoCAD is busy, running a command, or displaying a modal dialog. "
+                "Dismiss any open dialogs in AutoCAD and try again."
+            )
         elif any(marker in folded for marker in RetryPolicy.TRANSIENT_MARKERS):
             code = "CAD_TRANSIENT_FAILURE"
             retryable = True
@@ -998,12 +1013,25 @@ class DesignOrchestrator:
             task_id, execution_time_ms=(time.perf_counter() - started) * 1000.0
         )
 
-    def _run_cad(self, adapter: Any, operation: Any) -> Tuple[Any, int]:
-        """Run a CAD operation with one reconnect attempt for known transients."""
+    def _run_cad(
+        self, adapter: Any, operation: Any, allow_reconnect: bool = False
+    ) -> Tuple[Any, int]:
+        """Run a CAD operation serialized on COM worker without mid-transaction reconnect."""
+        from adapters.com_worker import run_com
+
+        def execute_on_worker():
+            return operation()
 
         def reconnect(_exc: Exception) -> None:
+            if not allow_reconnect:
+                return
             connect = getattr(adapter, "connect", None)
             if callable(connect):
-                connect(only_if_running=True)
+                connect(only_if_running=True, allow_launch=False)
 
-        return self.retry.run(operation, on_retry=reconnect)
+        cad_type = getattr(adapter, "cad_type", "autocad")
+        on_retry = reconnect if allow_reconnect else None
+        return self.retry.run(
+            lambda: run_com(execute_on_worker, cad_type=cad_type),
+            on_retry=on_retry,
+        )

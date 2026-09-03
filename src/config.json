@@ -33,6 +33,12 @@
     "port": 8888,
     "host": "127.0.0.1"
   },
+  "circuit_breaker": {
+    "failure_threshold": 3,
+    "cooldown_seconds": 5.0,
+    "backoff_seconds": 0.2,
+    "max_retries": 2
+  },
   "topology": {
     "enabled": true,
     "snap_tolerance_mm": 1.0,

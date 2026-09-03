@@ -1,10 +1,12 @@
+import asyncio
 import collections
 import logging
 import threading
+import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, WebSocket
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -12,6 +14,9 @@ from pydantic import BaseModel
 from __version__ import __version__
 from adapters.adapter_manager import AdapterRegistry, get_active_cad_type
 from core import get_supported_cads
+from design_engine.service import application_service
+
+_editor_session_token = str(uuid.uuid4())
 
 logger = logging.getLogger(__name__)
 
@@ -83,10 +88,11 @@ async def api_cad_export() -> dict:
 
     try:
         from adapters.adapter_manager import get_adapter
+        from adapters.com_worker import run_com
 
         adapter = get_adapter(only_if_running=True)
         if adapter:
-            success = adapter.export_to_excel()
+            success = run_com(adapter.export_to_excel, cad_type="autocad")
             return {
                 "success": success,
                 "detail": "Exportado con éxito" if success else "Error al exportar",
@@ -198,16 +204,19 @@ def refresh_dashboard_cache():
             )
         return
 
-    try:
-        connected = adapter.is_connected()
-    except Exception:
-        connected = False
+    from adapters.com_worker import run_com, is_com_busy_error
+    from core.exceptions import CADBusyError
 
-    if not connected:
-        _cache.update(connected=False, cad_type=active or "None")
-        return
+    def _extract():
+        try:
+            connected = adapter.is_connected()
+        except Exception:
+            connected = False
 
-    try:
+        if not connected:
+            _cache.update(connected=False, cad_type=active or "None")
+            return
+
         # Ask adapter to verify if active document has changed behind the scenes
         if hasattr(adapter, "check_document_change"):
             adapter.check_document_change()
@@ -292,6 +301,11 @@ def refresh_dashboard_cache():
             f"Dashboard cache refreshed: {active}, drawing '{current_drawing}' — "
             f"Total Entities: {total_entities}, {len(layers_info)} layers, {len(blocks_info)} blocks."
         )
+
+    try:
+        run_com(_extract, cad_type="autocad")
+    except CADBusyError:
+        logger.debug("AutoCAD is busy; skipping background dashboard cache refresh")
     except Exception as e:
         logger.error(f"Failed to refresh dashboard cache: {e}")
 
@@ -356,7 +370,8 @@ async def api_cad_switch_drawing(request: SwitchDrawingRequest) -> dict:
         return {"success": False, "error": "No active CAD adapter found"}
 
     try:
-        adapter.switch_drawing(request.drawing_name)
+        from adapters.com_worker import run_com
+        run_com(lambda: adapter.switch_drawing(request.drawing_name), cad_type="autocad")
         logger.info(f"Switched drawing to: {request.drawing_name}")
 
         # Trigger cache refresh synchronously
@@ -415,68 +430,75 @@ async def api_cad_entities(
         from adapters.adapter_manager import get_adapter
 
         adapter = get_adapter(only_if_running=True)
-        if hasattr(adapter, "check_document_change"):
-            adapter.check_document_change()
+        from adapters.com_worker import run_com
 
-        # Map friendly name or internal count key to DXF name
-        # Values are lists of DXF types to try in order.
-        mapping = {
-            # Friendly (Spanish)
-            "Línea": ["LINE"],
-            "Polilínea": ["LWPOLYLINE", "POLYLINE"],
-            "Círculo": ["CIRCLE"],
-            "Arco": ["ARC"],
-            "Bloque": ["INSERT"],
-            "Texto": ["TEXT", "MTEXT"],
-            "Cota": ["DIMENSION"],
-            "Spline": ["SPLINE"],
-            "Punto": ["POINT"],
-            "Sombreado": ["HATCH"],
-            # Internal (English - from get_entity_counts)
-            "Line": ["LINE"],
-            "Polyline": ["LWPOLYLINE", "POLYLINE"],
-            "Polyline2D": ["POLYLINE", "LWPOLYLINE"],
-            "Circle": ["CIRCLE"],
-            "Arc": ["ARC"],
-            "Block": ["INSERT"],
-            "Text": ["TEXT", "MTEXT"],
-            "MText": ["MTEXT", "TEXT"],
-            "Dimension": ["DIMENSION"],
-            "Spline": ["SPLINE"],
-            "Point": ["POINT"],
-            "Hatch": ["HATCH"],
-        }
+        def _do_extract():
+            if hasattr(adapter, "check_document_change"):
+                adapter.check_document_change()
 
-        requested_types = mapping.get(type) if type else None
-        if type and not requested_types:
-            requested_types = [type]
+            # Map friendly name or internal count key to DXF name
+            # Values are lists of DXF types to try in order.
+            mapping = {
+                # Friendly (Spanish)
+                "Línea": ["LINE"],
+                "Polilínea": ["LWPOLYLINE", "POLYLINE"],
+                "Círculo": ["CIRCLE"],
+                "Arco": ["ARC"],
+                "Bloque": ["INSERT"],
+                "Texto": ["TEXT", "MTEXT"],
+                "Cota": ["DIMENSION"],
+                "Spline": ["SPLINE"],
+                "Punto": ["POINT"],
+                "Sombreado": ["HATCH"],
+                # Internal (English - from get_entity_counts)
+                "Line": ["LINE"],
+                "Polyline": ["LWPOLYLINE", "POLYLINE"],
+                "Polyline2D": ["POLYLINE", "LWPOLYLINE"],
+                "Circle": ["CIRCLE"],
+                "Arc": ["ARC"],
+                "Block": ["INSERT"],
+                "Text": ["TEXT", "MTEXT"],
+                "MText": ["MTEXT", "TEXT"],
+                "Dimension": ["DIMENSION"],
+                "Spline": ["SPLINE"],
+                "Point": ["POINT"],
+                "Hatch": ["HATCH"],
+            }
 
-        offset = (page - 1) * limit
-        entities = []
-        dxf_type = None
+            requested_types = mapping.get(type) if type else None
+            if type and not requested_types:
+                requested_types = [type]
 
-        if requested_types:
-            # Try types in order until we find some entities or run out of types
-            for t_variant in requested_types:
-                res_entities = adapter.extract_drawing_data(
-                    only_selected=False,
-                    limit=limit,
-                    offset=offset,
-                    entity_type=t_variant,
+            offset = (page - 1) * limit
+            entities = []
+            dxf_type = None
+
+            if requested_types:
+                # Try types in order until we find some entities or run out of types
+                for t_variant in requested_types:
+                    res_entities = adapter.extract_drawing_data(
+                        only_selected=False,
+                        limit=limit,
+                        offset=offset,
+                        entity_type=t_variant,
+                    )
+                    if res_entities:
+                        entities = res_entities
+                        dxf_type = t_variant
+                        break
+
+                # If still nothing after all variants, ensure we tried at least the first one for consistency
+                if not entities and requested_types:
+                    dxf_type = requested_types[0]
+            else:
+                # Global extraction
+                entities = adapter.extract_drawing_data(
+                    only_selected=False, limit=limit, offset=offset
                 )
-                if res_entities:
-                    entities = res_entities
-                    dxf_type = t_variant
-                    break
 
-            # If still nothing after all variants, ensure we tried at least the first one for consistency
-            if not entities and requested_types:
-                dxf_type = requested_types[0]
-        else:
-            # Global extraction
-            entities = adapter.extract_drawing_data(
-                only_selected=False, limit=limit, offset=offset
-            )
+            return entities, dxf_type
+
+        entities, dxf_type = run_com(_do_extract, cad_type="autocad")
 
         # Get total for this specific type or global
         entity_counts = _cache.get("entity_counts", {})
@@ -528,6 +550,43 @@ async def api_cad_drawings() -> dict:
 async def api_logs(since: int = Query(default=0, ge=0)) -> dict:
     """Get server log entries newer than the given sequence number."""
     return {"success": True, "entries": log_buffer.since(since)}
+
+
+@api_app.get("/editor")
+async def get_editor_index() -> FileResponse:
+    """Serve the visual topology editor."""
+    editor_index = STATIC_DIR / "editor" / "index.html"
+    if not editor_index.exists():
+        raise HTTPException(status_code=404, detail="Editor static build not found")
+    return FileResponse(editor_index)
+
+
+@api_app.get("/api/editor/session")
+async def api_editor_session() -> dict:
+    """Get current process-local editor session token."""
+    return {"success": True, "token": _editor_session_token}
+
+
+@api_app.websocket("/api/editor/events")
+async def api_editor_events(websocket: Any, token: Optional[str] = Query(None)):
+    """Stream live CAD and workspace events to the visual topology editor."""
+    await websocket.accept()
+    last_seq = 0
+    try:
+        while True:
+            events = application_service.events.since(last_seq)
+            for event in events:
+                if hasattr(websocket, "send_json"):
+                    await websocket.send_json(event)
+                last_seq = max(last_seq, int(event.get("sequence", last_seq)))
+            try:
+                msg = await asyncio.wait_for(websocket.receive(), timeout=0.1)
+                if isinstance(msg, dict) and msg.get("type") == "websocket.disconnect":
+                    break
+            except asyncio.TimeoutError:
+                pass
+    except Exception:
+        pass
 
 
 # Mount static files (at the end to not shadow API routes)

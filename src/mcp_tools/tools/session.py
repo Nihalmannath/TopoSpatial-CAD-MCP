@@ -15,13 +15,14 @@ from typing import Annotated, Optional, Dict, Any, Callable, List, Tuple, Union,
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from core import get_supported_cads, CADConnectionError, get_config
+from core import get_supported_cads, CADConnectionError, CADBusyError, get_config
 from adapters.adapter_manager import (
     get_cad_instances,
     get_adapter,
     shutdown_all,
     auto_detect_cad,
 )
+from adapters.com_worker import run_com
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,7 @@ class _SessionOperationBase(BaseModel):
 class SimpleSessionOperation(_SessionOperationBase):
     action: Literal[
         "connect",
+        "start",
         "disconnect",
         "status",
         "list_supported",
@@ -86,7 +88,7 @@ def _refresh_cache_safe():
 
 
 def _connect(spec: Dict[str, Any]) -> Dict[str, Any]:
-    """Connect to a running or launchable CAD application.
+    """Attach to an already-running CAD application.
 
     Args:
         spec: Operation spec (no required keys).
@@ -95,13 +97,47 @@ def _connect(spec: Dict[str, Any]) -> Dict[str, Any]:
         Dict with keys: success (bool), detail (str).
     """
     try:
-        _adapter = get_adapter(only_if_running=False)
-        from adapters.adapter_manager import get_active_cad_type
+        def _do():
+            _adapter = get_adapter(only_if_running=True, allow_launch=False)
+            from adapters.adapter_manager import get_active_cad_type
 
-        cad_type = get_active_cad_type()
-        logger.info(f"Connected to {cad_type}")
-        _refresh_cache_safe()
-        return {"success": True, "detail": f"Connected to {cad_type}"}
+            cad_type = get_active_cad_type()
+            logger.info(f"Connected to {cad_type}")
+            _refresh_cache_safe()
+            return {"success": True, "detail": f"Connected to {cad_type}"}
+
+        return run_com(_do, cad_type="autocad")
+    except CADBusyError as e:
+        return {"success": False, "detail": f"CAD_BUSY: {e.reason}"}
+    except Exception as e:
+        return {
+            "success": False,
+            "detail": f"{e}. Use session 'start' to explicitly launch a new AutoCAD process.",
+        }
+
+
+def _start(spec: Dict[str, Any]) -> Dict[str, Any]:
+    """Explicitly launch and connect to a CAD application.
+
+    Args:
+        spec: Operation spec (no required keys).
+
+    Returns:
+        Dict with keys: success (bool), detail (str).
+    """
+    try:
+        def _do():
+            _adapter = get_adapter(only_if_running=False, allow_launch=True)
+            from adapters.adapter_manager import get_active_cad_type
+
+            cad_type = get_active_cad_type()
+            logger.info(f"Started and connected to {cad_type}")
+            _refresh_cache_safe()
+            return {"success": True, "detail": f"Started and connected to {cad_type}"}
+
+        return run_com(_do, cad_type="autocad")
+    except CADBusyError as e:
+        return {"success": False, "detail": f"CAD_BUSY: {e.reason}"}
     except Exception as e:
         return {"success": False, "detail": str(e)}
 
@@ -203,12 +239,14 @@ def _zoom_extents(spec: Dict[str, Any]) -> Dict[str, Any]:
     Returns:
         Dict with keys: success (bool), detail (str).
     """
-    adapter = get_adapter()
-    success = adapter.zoom_extents()
-    return {
-        "success": success,
-        "detail": "Zoomed to extents" if success else "Failed to zoom",
-    }
+    def _do():
+        adapter = get_adapter(only_if_running=True)
+        success = adapter.zoom_extents()
+        return {
+            "success": success,
+            "detail": "Zoomed to extents" if success else "Failed to zoom",
+        }
+    return run_com(_do, cad_type="autocad")
 
 
 def _undo(spec: Dict[str, Any]) -> Dict[str, Any]:
@@ -220,14 +258,16 @@ def _undo(spec: Dict[str, Any]) -> Dict[str, Any]:
     Returns:
         Dict with keys: success (bool), detail (str).
     """
-    adapter = get_adapter()
-    count = spec.get("count", 1)
-    success = adapter.undo(count=count)
-    if success:
-        detail = "Action undone" if count == 1 else f"{count} actions undone"
-    else:
-        detail = "Failed to undo"
-    return {"success": success, "detail": detail}
+    def _do():
+        adapter = get_adapter(only_if_running=True)
+        count = spec.get("count", 1)
+        success = adapter.undo(count=count)
+        if success:
+            detail = "Action undone" if count == 1 else f"{count} actions undone"
+        else:
+            detail = "Failed to undo"
+        return {"success": success, "detail": detail}
+    return run_com(_do, cad_type="autocad")
 
 
 def _redo(spec: Dict[str, Any]) -> Dict[str, Any]:
@@ -239,20 +279,22 @@ def _redo(spec: Dict[str, Any]) -> Dict[str, Any]:
     Returns:
         Dict with keys: success (bool), detail (str).
     """
-    adapter = get_adapter()
-    count = spec.get("count", 1)
-    success = adapter.redo(count=count)
-    if success:
-        detail = "Action redone" if count == 1 else f"{count} actions redone"
-    else:
-        detail = "Failed to redo"
-    return {"success": success, "detail": detail}
+    def _do():
+        adapter = get_adapter(only_if_running=True)
+        count = spec.get("count", 1)
+        success = adapter.redo(count=count)
+        if success:
+            detail = "Action redone" if count == 1 else f"{count} actions redone"
+        else:
+            detail = "Failed to redo"
+        return {"success": success, "detail": detail}
+    return run_com(_do, cad_type="autocad")
 
 
 def _screenshot(spec: Dict[str, Any]) -> Dict[str, Any]:
     """Capture window screenshot including UI chrome."""
-    adapter = get_adapter()
-    try:
+    def _do():
+        adapter = get_adapter(only_if_running=True)
         result = adapter.get_screenshot()
         return {
             "success": True,
@@ -260,14 +302,16 @@ def _screenshot(spec: Dict[str, Any]) -> Dict[str, Any]:
             "path": result["path"],
             "data": result["data"],
         }
+    try:
+        return run_com(_do, cad_type="autocad")
     except Exception as e:
         return {"success": False, "detail": str(e)}
 
 
 def _export_view(spec: Dict[str, Any]) -> Dict[str, Any]:
     """Export view using internal rendering (no UI, works when obscured)."""
-    adapter = get_adapter()
-    try:
+    def _do():
+        adapter = get_adapter(only_if_running=True)
         result = adapter.export_view()
         return {
             "success": True,
@@ -275,6 +319,8 @@ def _export_view(spec: Dict[str, Any]) -> Dict[str, Any]:
             "path": result["path"],
             "data": result["data"],
         }
+    try:
+        return run_com(_do, cad_type="autocad")
     except Exception as e:
         return {"success": False, "detail": str(e)}
 
@@ -297,8 +343,6 @@ def _check_running(spec: Dict[str, Any]) -> Dict[str, Any]:
 
 def _open_dashboard(spec: Dict[str, Any]) -> Dict[str, Any]:
     """Open the web dashboard in the default browser."""
-    # import webbrowser
-
     config = get_config()
     host = spec.get("host", config.dashboard.host)
     port = spec.get("port", config.dashboard.port)
@@ -313,6 +357,7 @@ def _open_dashboard(spec: Dict[str, Any]) -> Dict[str, Any]:
 # Dispatch table: action -> (handler, required_fields)
 SESSION_DISPATCH: Dict[str, Tuple[Callable, List[str]]] = {
     "connect": (_connect, []),
+    "start": (_start, []),
     "disconnect": (_disconnect, []),
     "status": (_status, []),
     "list_supported": (_list_supported, []),
@@ -366,7 +411,8 @@ def register_session_tools(mcp):
                 Supported actions and their fields:
 
                 Connection:
-                - connect:        (no fields) — launches and connects to auto-detected CAD
+                - connect:        (no fields) — attaches to already-running CAD (only_if_running=True)
+                - start:          (no fields) — explicitly launches and connects to CAD
                 - disconnect:     (no fields) — disconnects from CAD
                 - status:         (no fields) — shows connection status
                 - list_supported: (no fields) — lists available CAD applications

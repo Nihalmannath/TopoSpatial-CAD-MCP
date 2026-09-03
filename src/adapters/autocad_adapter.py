@@ -75,7 +75,9 @@ class AutoCADAdapter(
         self.cad_type = cad_type.lower()
         self.config = get_cad_config(self.cad_type)
 
-        # Thread-local storage for COM objects to prevent cross-thread RPC errors
+        self._application: Any = None
+        self._document: Any = None
+        self._aec_version: Optional[str] = None
         self._local = threading.local()
 
         self._drawing_state: Dict[str, Any] = {
@@ -85,20 +87,20 @@ class AutoCADAdapter(
 
     @property
     def application(self) -> Any:
-        """Get the thread-local application COM proxy."""
-        return getattr(self._local, "application", None)
+        """Get the application COM proxy."""
+        return self._application
 
     @application.setter
     def application(self, value: Any):
-        """Set the thread-local application COM proxy."""
-        self._local.application = value
+        """Set the application COM proxy."""
+        self._application = value
 
     @property
     def document(self) -> Any:
-        """Get the thread-local document COM proxy."""
-        return getattr(self._local, "document", None)
+        """Get the document COM proxy."""
+        return self._document
 
     @document.setter
     def document(self, value: Any):
-        """Set the thread-local document COM proxy."""
-        self._local.document = value
+        """Set the document COM proxy."""
+        self._document = value

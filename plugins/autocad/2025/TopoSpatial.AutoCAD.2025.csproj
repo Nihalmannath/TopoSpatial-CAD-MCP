@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <OutputType>Library</OutputType>
+    <RootNamespace>TopoSpatial.AutoCAD</RootNamespace>
+    <AssemblyName>TopoSpatial.AutoCAD.2025</AssemblyName>
+    <Version>0.3.0</Version>
+    <Authors>TopoSpatial-CAD MCP</Authors>
+    <Description>Local visual topology editor palette for AutoCAD 2025.</Description>
+    <AutoCADManagedPath Condition="'$(AutoCADManagedPath)' == ''">C:\Program Files\Autodesk\AutoCAD 2025</AutoCADManagedPath>
+    <UseWindowsForms>true</UseWindowsForms>
+    <LangVersion>latest</LangVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="..\src\TopoSpatialPlugin.cs" Link="TopoSpatialPlugin.cs" />
+    <Compile Include="..\src\StudioContract.cs" Link="StudioContract.cs" />
+    <Reference Include="AcCoreMgd"><HintPath>$(AutoCADManagedPath)\AcCoreMgd.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="AcDbMgd"><HintPath>$(AutoCADManagedPath)\AcDbMgd.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="AcMgd"><HintPath>$(AutoCADManagedPath)\AcMgd.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4191.47" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
+</Project>

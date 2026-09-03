@@ -23,26 +23,14 @@ TopoSpatial-CAD MCP constructs a rich spatial knowledge graph:
 > - **Bedroom-01** is **topologically adjacent to Corridor-01**.
 > - **Door-03** connects **Bedroom-01** directly to **Corridor-01**.
 
-### Current implementation status
+### Version 3.0.0 Architecture & Features
 
-- **9 unified MCP tools**, including typed high-level design orchestration plus
-  the existing low-level CAD and topology workflows.
-- **3–6-call architectural lifecycle** through bounded semantic context,
-  revision-cached topology, one local execution plan, compact preview, and
-  atomic apply.
-- **Native AutoCAD Architecture authoring** for `AecDbWall`, `AecDbDoor`, and
-  `AecDbWindow`, with runtime AEC API/style discovery.
-- **Portable fallback geometry** for ordinary AutoCAD, ZWCAD, GstarCAD, and
-  BricsCAD.
-- **Explicit room/wall/door/window semantics** persisted in
-  `TOPOSPATIAL_TOPOLOGY` XData and exported to JSON-LD and Turtle.
-- **Shared-wall compilation** expands room boundaries before preview, merges
-  compatible coincident partitions, and stores one wall identity with multiple
-  bounding-room relationships.
-- **Preview/apply transactions** with a 10-minute default expiry, drawing
-  revision checks, idempotent apply, one AutoCAD undo group, and verified
-  rollback.
-- **286 automated tests passing** on the current Windows development setup.
+- **Pillar 1 — Plugin (`plugins/autocad`)**: Native AutoCAD and AutoCAD Architecture C# plugin packages for 2024 (.NET 4.8) and 2025 (.NET 8). Includes `TOPOSTUDIO` dockable palette hosting the visual topology editor via WebView2, non-invasive `TOPOSTUDIOEVENTS` event coalescing on CAD idle, and STA COM worker serialization with fast-failing circuit breakers.
+- **Pillar 2 — Graph (`/editor` & `topology_engine`)**: Interactive web-based Visual Topology Studio with dual synchronized views: full-bleed vector CAD underlay canvas and Cytoscape.js topological circulation graph. Supports `top:SpatialIntent` authoring, real-time circulation pathfinding, architectural space programming, and live WebSocket updates.
+- **Pillar 3 — Plan (`manage_design` & `design_engine`)**: High-level design orchestration lifecycle (`create`, `modify`, `validate`, `preview`, `apply`, `cancel`, `rollback`) with local `ExecutionPlan` generation, host-before-opening dependency ordering, deterministic shared-wall compilation (`cad:boundingRooms`), revision-keyed topology caching, and atomic rollback.
+- **Unified MCP Surface**: 9 comprehensive tools bridging high-level design orchestration, topology analysis, drawing primitives, and session management.
+- **Native ACA & Portable Fallback**: Runtime style and API discovery for native `AecDbWall`, `AecDbDoor`, and `AecDbWindow`, with portable standard CAD fallbacks for AutoCAD, ZWCAD, GstarCAD, and BricsCAD.
+- **333 automated tests passing** with 100% test coverage across COM safety, design orchestration, shared-wall networks, and visual topology editor semantics.
 
 ```
 ┌────────────────────────────────────────────────────────┐

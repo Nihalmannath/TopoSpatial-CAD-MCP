@@ -1,6 +1,6 @@
 """Version information for TopoSpatial-CAD-MCP."""
 
-__version__ = "0.3.0"
+__version__ = "3.0.0"
 __version_info__ = tuple(int(x) for x in __version__.split("."))
 
 # Project metadata

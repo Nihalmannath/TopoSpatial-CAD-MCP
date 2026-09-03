@@ -29,34 +29,16 @@ class AdapterRegistry:
     _lock = threading.Lock()  # Class-level lock for singleton instantiation
 
     def __init__(self):
-        """Initialize the registry with thread-local adapter state.
+        """Initialize the registry with centralized adapter state.
 
-        COM proxies belong to the apartment/thread that created them.  Keeping
-        one process-global adapter allowed the MCP worker pool and dashboard
-        thread to reuse an adapter created in a different COM apartment.  Each
-        caller thread now owns its adapter instance and active CAD type.
+        AutoCAD COM access is serialized behind a dedicated COM worker thread.
+        AdapterRegistry holds the shared adapter instance and active CAD type,
+        ensuring all worker threads coordinate through a single adapter without
+        racing to create duplicate processes.
         """
-        self._local = threading.local()
-        # Instance-level lock for mutations
+        self._adapter: Optional[Any] = None
+        self._cad_type: Optional[str] = None
         self._instance_lock = threading.Lock()
-
-    @property
-    def _adapter(self) -> Optional[Any]:
-        """Return the adapter owned by the current thread."""
-        return getattr(self._local, "adapter", None)
-
-    @_adapter.setter
-    def _adapter(self, value: Optional[Any]) -> None:
-        self._local.adapter = value
-
-    @property
-    def _cad_type(self) -> Optional[str]:
-        """Return the active CAD type for the current thread."""
-        return getattr(self._local, "cad_type", None)
-
-    @_cad_type.setter
-    def _cad_type(self, value: Optional[str]) -> None:
-        self._local.cad_type = value
 
     @classmethod
     def get_instance(cls) -> "AdapterRegistry":
@@ -85,18 +67,22 @@ class AdapterRegistry:
         """Get the currently active CAD type name, or 'None' if disconnected."""
         return self._cad_type or "None"
 
-    def get_adapter(self, only_if_running: bool = False) -> Any:
+    def get_adapter(
+        self, only_if_running: bool = True, allow_launch: bool = False
+    ) -> Any:
         """
         Get the active CAD adapter instance. Auto-detects if none exists.
 
         Args:
-            only_if_running: If True, fails if CAD is not already open.
+            only_if_running: If True (default), attaches only to an already running CAD.
+            allow_launch: If False (default), never launches AutoCAD via Dispatch().
 
         Returns:
             CAD adapter instance
 
         Raises:
-            CADConnectionError: If adapter cannot be created or connected
+            CADBusyError: If CAD is busy or in a modal dialog.
+            CADConnectionError: If adapter cannot be created or connected.
         """
         with self._instance_lock:
             if self._adapter is not None:
@@ -105,7 +91,7 @@ class AdapterRegistry:
                     return self._adapter
 
                 # It exists but is disconnected. Try to reconnect.
-                if self._adapter.connect(only_if_running=only_if_running):
+                if self._adapter.connect(only_if_running=only_if_running, allow_launch=allow_launch):
                     return self._adapter
 
                 if only_if_running:
@@ -114,7 +100,7 @@ class AdapterRegistry:
                     )
 
             # No working adapter exists. We must auto-detect.
-            self._auto_detect_internal(only_if_running=only_if_running)
+            self._auto_detect_internal(only_if_running=only_if_running, allow_launch=allow_launch)
 
             if self._adapter is not None and self._adapter.is_connected():
                 return self._adapter
@@ -123,9 +109,12 @@ class AdapterRegistry:
                 "cad", "Could not connect to any supported CAD application"
             )
 
-    def _auto_detect_internal(self, only_if_running: bool = False) -> None:
+    def _auto_detect_internal(
+        self, only_if_running: bool = True, allow_launch: bool = False
+    ) -> None:
         """Internal auto-detection logic within the locked context."""
         from adapters import AutoCADAdapter
+        from core.exceptions import CADBusyError
 
         # Prefer AutoCAD. Trying an uninstalled CAD first adds delays and can
         # obscure the useful AutoCAD connection error in MCP clients.
@@ -134,14 +123,17 @@ class AdapterRegistry:
         for ct in cad_priorities:
             try:
                 logger.info(
-                    f"Auto-detecting {ct} (only_if_running={only_if_running})..."
+                    f"Auto-detecting {ct} (only_if_running={only_if_running}, allow_launch={allow_launch})..."
                 )
                 adapter = AutoCADAdapter(ct)
-                if adapter.connect(only_if_running=only_if_running):
+                if adapter.connect(only_if_running=only_if_running, allow_launch=allow_launch):
                     self._adapter = adapter
                     self._cad_type = ct
                     logger.info(f"Auto-detected: {ct} is available and active")
                     return
+            except CADBusyError:
+                # If AutoCAD is busy, it IS running! Never try other CADs or treat as absent.
+                raise
             except Exception as e:
                 logger.debug(f"{ct} not available: {e}")
                 continue
@@ -157,12 +149,14 @@ class AdapterRegistry:
             return {self._cad_type: self._adapter}
         return {}
 
-    def auto_detect_cad(self, only_if_running: bool = False) -> None:
+    def auto_detect_cad(
+        self, only_if_running: bool = True, allow_launch: bool = False
+    ) -> None:
         """
         Auto-detect and connect to available CAD applications on startup (thread-safe).
         """
         with self._instance_lock:
-            self._auto_detect_internal(only_if_running=only_if_running)
+            self._auto_detect_internal(only_if_running=only_if_running, allow_launch=allow_launch)
             if self._adapter is None:
                 logger.warning(
                     "No CAD application detected. Will attempt to connect on first use."
@@ -170,10 +164,7 @@ class AdapterRegistry:
 
     def shutdown_all(self) -> None:
         """
-        Disconnect and cleanup the current thread's CAD adapter.
-
-        A COM proxy cannot be safely disconnected from another thread, so each
-        worker cleans up only the adapter it owns.
+        Disconnect and cleanup the CAD adapter.
         """
         with self._instance_lock:
             if self._adapter is not None:
@@ -205,9 +196,13 @@ def set_active_cad_type(cad_type: Optional[str]) -> None:
     raise NotImplementedError("Setting active CAD type manually is not supported.")
 
 
-def get_adapter(cad_type: Optional[str] = None, only_if_running: bool = False) -> Any:
+def get_adapter(
+    cad_type: Optional[str] = None,
+    only_if_running: bool = True,
+    allow_launch: bool = False,
+) -> Any:
     """Convenience function - delegates to singleton registry."""
-    return _registry.get_adapter(only_if_running=only_if_running)
+    return _registry.get_adapter(only_if_running=only_if_running, allow_launch=allow_launch)
 
 
 def get_cad_instances() -> Dict[str, Any]:
@@ -215,9 +210,11 @@ def get_cad_instances() -> Dict[str, Any]:
     return _registry.get_cad_instances()
 
 
-def auto_detect_cad(only_if_running: bool = False) -> None:
+def auto_detect_cad(
+    only_if_running: bool = True, allow_launch: bool = False
+) -> None:
     """Convenience function - delegates to singleton registry."""
-    _registry.auto_detect_cad(only_if_running=only_if_running)
+    _registry.auto_detect_cad(only_if_running=only_if_running, allow_launch=allow_launch)
 
 
 def shutdown_all() -> None:

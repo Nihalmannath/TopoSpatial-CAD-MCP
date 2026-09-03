@@ -113,6 +113,8 @@ def normalize_wall_network(
             "replace_managed",
         }:
             passthrough.append(operation)
+            if "boundary" in operation.get("geometry", {}):
+                continue
             room_id = str(operation["semantic_id"])
             if kind == "replace_managed":
                 replaced_room_walls[room_id] = set(

@@ -10,10 +10,15 @@ from __future__ import annotations
 
 import logging
 import re
+import sys
 import time
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional
 
-import pythoncom
+if sys.platform == "win32":
+    import pythoncom
+else:
+    from unittest.mock import MagicMock
+    pythoncom = MagicMock()
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +70,9 @@ class ArchitectureMixin:
     def _discover_aec_version(self, refresh: bool = False) -> Optional[str]:
         if self.cad_type != "autocad":
             return None
-        cached = getattr(self._local, "aec_version", None)
+        cached = getattr(self, "_aec_version", None)
+        if cached is None and hasattr(self, "_local"):
+            cached = getattr(self._local, "aec_version", None)
         if cached is not None and not refresh:
             return cached or None
 
@@ -80,7 +87,9 @@ class ArchitectureMixin:
                 getattr(application, "Caption", "")
             ).upper()
         if not loaded:
-            self._local.aec_version = ""
+            self._aec_version = ""
+            if hasattr(self, "_local"):
+                self._local.aec_version = ""
             return None
 
         for version in self._registered_aec_versions():
@@ -88,11 +97,15 @@ class ArchitectureMixin:
                 application.GetInterfaceObject(
                     f"{self._AEC_APPLICATION_PREFIX}{version}"
                 )
-                self._local.aec_version = version
+                self._aec_version = version
+                if hasattr(self, "_local"):
+                    self._local.aec_version = version
                 return version
             except Exception:
                 continue
-        self._local.aec_version = ""
+        self._aec_version = ""
+        if hasattr(self, "_local"):
+            self._local.aec_version = ""
         return None
 
     def _aec_database(self, version: str) -> Any:

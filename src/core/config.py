@@ -7,7 +7,7 @@ import json
 import threading
 from pathlib import Path
 from typing import Dict, Any, Optional, List
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from .exceptions import ConfigError
 
 
@@ -50,6 +50,16 @@ class TopologyConfig:
 
 
 @dataclass
+class CircuitBreakerConfig:
+    """Configuration for CAD_BUSY circuit breaker and bounded backoff."""
+
+    failure_threshold: int = 3
+    cooldown_seconds: float = 5.0
+    backoff_seconds: float = 0.2
+    max_retries: int = 2
+
+
+@dataclass
 class ServerConfig:
     """Complete server configuration."""
 
@@ -57,6 +67,7 @@ class ServerConfig:
     output: OutputConfig
     dashboard: DashboardConfig
     topology: TopologyConfig
+    circuit_breaker: CircuitBreakerConfig = field(default_factory=CircuitBreakerConfig)
     logging_level: str = "INFO"
     debug: bool = False
 
@@ -159,6 +170,7 @@ class ConfigManager:
                 host="127.0.0.1",
             ),
             topology=TopologyConfig(),
+            circuit_breaker=CircuitBreakerConfig(),
             logging_level="INFO",
             debug=False,
         )
@@ -209,11 +221,20 @@ class ConfigManager:
                 ),
             )
 
+            cb_dict = config_dict.get("circuit_breaker", {})
+            circuit_breaker = CircuitBreakerConfig(
+                failure_threshold=int(cb_dict.get("failure_threshold", 3)),
+                cooldown_seconds=float(cb_dict.get("cooldown_seconds", 5.0)),
+                backoff_seconds=float(cb_dict.get("backoff_seconds", 0.2)),
+                max_retries=int(cb_dict.get("max_retries", 2)),
+            )
+
             return ServerConfig(
                 cad=cad_configs,
                 output=output,
                 dashboard=dashboard,
                 topology=topology,
+                circuit_breaker=circuit_breaker,
                 logging_level=config_dict.get("logging_level", "INFO"),
                 debug=config_dict.get("debug", False),
             )

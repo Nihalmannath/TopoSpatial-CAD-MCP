@@ -22,13 +22,28 @@ ENV/
 htmlcov/
 coverage_report.txt
 
-# Temporary / Scratch test scripts
+# Frontend and JavaScript/TypeScript
+node_modules/
+*.tsbuildinfo
+
+# Plugin .NET build outputs
+plugins/autocad/**/bin/
+plugins/autocad/**/obj/
+plugins/autocad/dist/
+
+# Temporary / Scratch test scripts and debug images
 test_*.png
 test_*.txt
 verify_*.py
 debug_*.py
 dxf_dump.txt
 scratch/
+autocad-plugin-*.png
+cad_screenshot*.png
+editor-canvas-check.png
+.bridge_uploads/
+.~lock.*
+*.tmp
 
 # Logging
 logs/

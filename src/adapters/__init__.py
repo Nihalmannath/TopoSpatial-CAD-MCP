@@ -8,5 +8,21 @@ Design:
 """
 
 from .autocad_adapter import AutoCADAdapter
+from .com_worker import (
+    COMWorker,
+    get_com_worker,
+    run_com,
+    is_com_busy_error,
+    is_com_not_running_error,
+    CADBusyCircuitBreaker,
+)
 
-__all__ = ["AutoCADAdapter"]
+__all__ = [
+    "AutoCADAdapter",
+    "COMWorker",
+    "get_com_worker",
+    "run_com",
+    "is_com_busy_error",
+    "is_com_not_running_error",
+    "CADBusyCircuitBreaker",
+]

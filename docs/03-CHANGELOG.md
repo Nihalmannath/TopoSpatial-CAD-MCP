@@ -1,8 +1,35 @@
 # Changelog
 
-## Unreleased
+## [3.0.0] - 2026-09-03
 
 ### Added
+
+#### AutoCAD Plugin (.NET & WebView2)
+- Native AutoCAD and AutoCAD Architecture plugin packages in `plugins/autocad`:
+  - **2024 Release**: Compiled against .NET Framework 4.8.
+  - **2025 Release**: Compiled against .NET 8 (Windows Desktop).
+- `TOPOSTUDIO` dockable palette hosting the interactive visual topology studio via Microsoft WebView2.
+- `TOPOSTUDIOEVENTS` non-invasive document and entity change tracker that coalesces modifications on CAD idle events without opening competing transactions.
+- Typed message protocol ensuring secure, origin-validated bidirectional communication between the web studio and the CAD document.
+- Single-threaded apartment (STA) COM worker (`com_worker.py`) with fast-failing circuit breaker protecting CAD from RPC contention or modal lockups.
+
+#### Visual Topology Studio & Spatial Graph
+- Full-featured React 18 + TypeScript + Vite topology editor bundled directly into the MCP web server at `/editor`.
+- Dual synchronized viewport: full-bleed vector CAD underlay canvas paired with a Cytoscape.js circulation and topological graph.
+- Spatial intent authoring (`top:SpatialIntent`) supporting programmatic architectural constraints (direct access, adjacency, isolation) without premature CAD linework.
+- Real-time circulation graph routing (`/api/editor/route`) with door/opening clearance verification and accessibility checks.
+- Architectural space scheduling, program inspection, and zone classification (living, sleeping, service, circulation, office, outdoor).
+- WebSocket event broker (`/api/editor/events`) streaming live model and CAD updates to connected visual clients.
+- Process-local session token gating and single-dashboard port ownership protocol.
+
+#### High-Level Design Orchestration & Planning
+- `manage_design` high-level lifecycle with local execution planning: `create`, `modify`, `validate`, `preview`, `apply`, `cancel`, `rollback`, `inspect`, and `metrics`.
+- Deterministic shared-wall compiler resolving multi-room partition boundaries into single physical walls with multiple `cad:boundingRooms`.
+- Host-before-opening local dependency graph enforcing wall creation prior to doors or windows.
+- Revision-keyed topology cache and bounded semantic-neighborhood walker.
+- Support for arbitrary 2D polygon boundaries for rooms and spaces (`top:Space`, `top:Room`).
+- In-place transactional preview/apply with automated single-undo-group rollback on failure.
+
 
 - Typed `manage_design` high-level lifecycle with `inspect`, `get_context`,
   `get_result`, `create`, `modify`, `validate`, `preview`, `apply`, `cancel`,

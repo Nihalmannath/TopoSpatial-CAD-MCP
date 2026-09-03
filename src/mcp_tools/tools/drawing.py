@@ -622,6 +622,11 @@ def register_drawing_tools(mcp):
                 )
                 continue
 
+            # Periodically yield briefly to allow AutoCAD message loop to process licensing heartbeats
+            if (i + 1) % 15 == 0:
+                import time
+                time.sleep(0.01)
+
             try:
                 handle = handler(spec)
                 results.append(
@@ -646,6 +651,22 @@ def register_drawing_tools(mcp):
                     }
                 )
             except Exception as e:
+                from core.exceptions import CADBusyError
+                from adapters.com_worker import is_com_busy_error
+
+                if isinstance(e, CADBusyError) or is_com_busy_error(e):
+                    logger.warning(f"AutoCAD busy while drawing entity {i} ({entity_type}): {e}")
+                    results.append(
+                        {
+                            "index": i,
+                            "type": entity_type,
+                            "success": False,
+                            "error": f"CAD_BUSY: {e}",
+                        }
+                    )
+                    # Stop batch early to avoid hammering AutoCAD while busy/modal
+                    break
+
                 logger.error(f"Error drawing entity {i} ({entity_type}): {e}")
                 results.append(
                     {

@@ -6,13 +6,22 @@ Provides decorators for standardizing adapter access and error handling:
 - @cad_tool_with_ui: CAD tool decorator with MCP Apps UI support
 """
 
+import logging
 import threading
 from functools import wraps
 from typing import Any, Callable, Dict, Optional, TypeVar
 
-from mcp.server.fastmcp import FastMCP
+try:
+    from mcp.server.fastmcp import FastMCP
+except Exception:
+    try:
+        from fastmcp import FastMCP  # type: ignore
+    except Exception:
+        FastMCP = Any  # type: ignore
 
-from core import CADOperationError
+from core import CADOperationError, CADBusyError, CADConnectionError
+
+logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
@@ -107,10 +116,20 @@ def cad_tool(mcp: FastMCP, operation_name: str):
         @wraps(func)
         def wrapper(*args, **kwargs) -> T:
             from adapters.adapter_manager import get_adapter
+            from adapters.com_worker import run_com
 
             try:
-                set_current_adapter(get_adapter(None))
-                return func(*args, **kwargs)
+                def _exec():
+                    adapter = get_adapter(only_if_running=True)
+                    set_current_adapter(adapter)
+                    return func(*args, **kwargs)
+
+                return run_com(_exec, cad_type="autocad")
+            except CADBusyError as e:
+                logger.warning(f"CAD tool '{operation_name}' failed due to CAD_BUSY: {e}")
+                raise CADOperationError(operation_name, f"CAD_BUSY: {e.reason}") from e
+            except CADConnectionError as e:
+                raise CADOperationError(operation_name, f"CAD_NOT_CONNECTED: {e.reason}") from e
             except CADOperationError:
                 raise
             except Exception as e:
@@ -161,10 +180,20 @@ def cad_tool_with_ui(
         @wraps(func)
         def wrapper(*args, **kwargs) -> T:
             from adapters.adapter_manager import get_adapter
+            from adapters.com_worker import run_com
 
             try:
-                set_current_adapter(get_adapter())
-                return func(*args, **kwargs)
+                def _exec():
+                    adapter = get_adapter(only_if_running=True)
+                    set_current_adapter(adapter)
+                    return func(*args, **kwargs)
+
+                return run_com(_exec, cad_type="autocad")
+            except CADBusyError as e:
+                logger.warning(f"CAD tool '{operation_name}' failed due to CAD_BUSY: {e}")
+                raise CADOperationError(operation_name, f"CAD_BUSY: {e.reason}") from e
+            except CADConnectionError as e:
+                raise CADOperationError(operation_name, f"CAD_NOT_CONNECTED: {e.reason}") from e
             except CADOperationError:
                 raise
             except Exception as e:

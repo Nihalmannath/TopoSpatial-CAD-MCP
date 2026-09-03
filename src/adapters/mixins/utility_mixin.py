@@ -21,15 +21,23 @@ if sys.platform == "win32":
     import win32con
     import pywintypes
 else:
-    raise ImportError("AutoCAD adapter requires Windows OS with COM support")
+    from unittest.mock import MagicMock
+    win32com = MagicMock()
+    pythoncom = MagicMock()
+    win32gui = MagicMock()
+    win32api = MagicMock()
+    win32con = MagicMock()
+    pywintypes = MagicMock()
 
 from core import (
     CADOperationError,
     CADConnectionError,
+    CADBusyError,
     InvalidParameterError,
     Point,
     ConfigManager,
 )
+from adapters.com_worker import is_com_busy_error
 from mcp_tools.constants import (
     COLOR_MAP,
     AUTOCAD_WINDOW_CLASSES,
@@ -181,17 +189,12 @@ class UtilityMixin:
         def validate_lineweight(self, weight: int) -> int: ...
 
     def _validate_connection(self) -> None:
-        """Check if connection is still alive, otherwise reconnect.
-
-        Is thread-safe: each thread will have its own proxy via self._local.
-        """
-        import threading
-
+        """Check if connection is still alive, failing safely on CAD_BUSY."""
         if self.application is None:
             from .connection_mixin import ConnectionMixin
 
             if isinstance(self, ConnectionMixin):
-                self.connect(only_if_running=True)
+                self.connect(only_if_running=True, allow_launch=False)
             else:
                 logger.warning(
                     "_validate_connection: application is None and self is not ConnectionMixin"
@@ -199,16 +202,20 @@ class UtilityMixin:
                 return
 
         try:
-            # Simple ping to verify COM proxy is still valid for THIS thread
+            # Simple ping to verify COM proxy is still valid
             _ = self.application.Visible
         except Exception as e:
-            logger.debug(
-                f"Connection validation failed (thread {threading.get_ident()}): {e}"
-            )
+            if is_com_busy_error(e):
+                raise CADBusyError(
+                    getattr(self, "cad_type", "autocad"),
+                    f"AutoCAD is busy or in a modal dialog: {e}",
+                ) from e
+
+            logger.debug(f"Connection validation failed: {e}")
             from .connection_mixin import ConnectionMixin
 
             if isinstance(self, ConnectionMixin):
-                self.connect(only_if_running=True)
+                self.connect(only_if_running=True, allow_launch=False)
 
     def _get_application(self, operation: str = "operation") -> Any:
         """Helper to ensure application is available for an operation."""
@@ -411,50 +418,14 @@ class UtilityMixin:
             return default
 
     def _simulate_autocad_click(self) -> bool:
-        """Simulate a click in the CAD window to force viewport update.
+        """Deprecated mouse click simulation (disabled for stability).
 
-        This is a workaround to ensure the viewport updates after operations.
-        Finds the CAD main window and simulates a subtle click.
-
-        Returns:
-            True if click simulation succeeded, False otherwise
+        Simulating hardware mouse clicks hijacks the user's cursor and interferes
+        with modal dialogs and licensing verification. Viewport regeneration is
+        now handled via Document.Regen(1).
         """
-        try:
-            self._validate_connection()
-
-            hwnd = None
-            for class_name in AUTOCAD_WINDOW_CLASSES:
-                hwnd = win32gui.FindWindow(class_name, None)
-                if hwnd:
-                    logger.debug(f"Found CAD window: {class_name}")
-                    break
-
-            if not hwnd:
-                logger.debug("CAD window not found for click simulation")
-                return False
-
-            # Get window center position for subtle click
-            try:
-                rect = win32gui.GetWindowRect(hwnd)
-                x = (rect[0] + rect[2]) // 2  # Center X
-                y = (rect[1] + rect[3]) // 2  # Center Y
-
-                # Simulate left mouse click at window center
-                win32api.SetCursorPos((x, y))
-                time.sleep(CLICK_DELAY / 1000.0)
-                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTDOWN, x, y, 0, 0)
-                time.sleep(CLICK_HOLD_DELAY / 1000.0)
-                win32api.mouse_event(win32con.MOUSEEVENTF_LEFTUP, x, y, 0, 0)
-
-                logger.debug("CAD window click simulated")
-                return True
-            except Exception as e:
-                logger.debug(f"Click simulation failed: {e}")
-                return False
-
-        except Exception as e:
-            logger.debug(f"_simulate_autocad_click error: {e}")
-            return False
+        logger.debug("_simulate_autocad_click: skipped (using native Regen)")
+        return True
 
     def resolve_export_path(self, filename: str, folder_type: str = "drawings") -> str:
         """Centralized path resolution for all export operations.

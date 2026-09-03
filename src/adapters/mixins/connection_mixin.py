@@ -13,9 +13,17 @@ if sys.platform == "win32":
     import pythoncom
     import pywintypes
 else:
-    raise ImportError("AutoCAD adapter requires Windows OS with COM support")
+    from unittest.mock import MagicMock
+    win32com = MagicMock()
+    pythoncom = MagicMock()
+    pywintypes = MagicMock()
 
-from core import CADConnectionError
+from core import CADConnectionError, CADBusyError
+from adapters.com_worker import (
+    get_com_worker,
+    is_com_busy_error,
+    is_com_not_running_error,
+)
 
 if TYPE_CHECKING:
     from core.config import CADConfig
@@ -45,12 +53,23 @@ class ConnectionMixin:
         in the Running Object Table.  An explicitly configured CLSID bypasses
         that lookup while preserving the normal ProgID path everywhere else.
         """
+        if win32com is None:
+            raise CADConnectionError(self.cad_type, "COM support is only available on Windows")
+
         try:
             return win32com.client.GetActiveObject(self.config.prog_id)
         except Exception as prog_id_error:
+            if is_com_busy_error(prog_id_error):
+                raise CADBusyError(
+                    self.cad_type,
+                    f"GetActiveObject({self.config.prog_id}) rejected: application is busy or in a modal dialog: {prog_id_error}",
+                ) from prog_id_error
+
             com_clsid = getattr(self.config, "com_clsid", None)
             if not com_clsid:
-                raise
+                if is_com_not_running_error(prog_id_error):
+                    raise CADConnectionError(self.cad_type, "CAD application is not running") from prog_id_error
+                raise prog_id_error
 
             try:
                 clsid = pywintypes.IID(com_clsid)
@@ -63,70 +82,76 @@ class ConnectionMixin:
                 )
                 return application
             except Exception as clsid_error:
+                if is_com_busy_error(clsid_error):
+                    raise CADBusyError(
+                        self.cad_type,
+                        f"GetActiveObject({com_clsid}) rejected: application is busy or in a modal dialog: {clsid_error}",
+                    ) from clsid_error
+                if is_com_not_running_error(clsid_error):
+                    raise CADConnectionError(self.cad_type, "CAD application is not running") from clsid_error
                 raise clsid_error from prog_id_error
 
-    def connect(self, only_if_running: bool = False) -> bool:
+    def connect(self, only_if_running: bool = True, allow_launch: bool = False) -> bool:
         """Connect to the CAD application via COM, initializing COM for this thread.
 
-        Tries to attach to an already-running instance first. If none is found
-        and ``only_if_running`` is False, launches a new instance.
+        By default, attaches ONLY to an already-running instance (only_if_running=True, allow_launch=False).
+        AutoCAD is launched via Dispatch() ONLY when explicitly requested via session/start (allow_launch=True).
 
         Args:
-            only_if_running: When True, return False instead of launching a new
-                CAD instance if none is currently running.
+            only_if_running: When True, do not launch a new CAD instance if none is running.
+            allow_launch: When False, never launch a new CAD instance via Dispatch().
 
         Returns:
             True if the connection was established successfully.
 
         Raises:
-            CADConnectionError: If COM initialization fails or the ProgID is invalid.
+            CADBusyError: If AutoCAD is busy, running a command, or in a modal dialog.
+            CADConnectionError: If connection fails or CAD is not running.
         """
+        # Fast-fail if circuit breaker is open
+        get_com_worker().circuit_breaker.check(self.cad_type)
+
         try:
-            logger.info(f"Connecting to {self.cad_type}...")
+            logger.info(
+                f"Connecting to {self.cad_type} (only_if_running={only_if_running}, allow_launch={allow_launch})..."
+            )
 
             # Initialize COM for this thread
-            # CoInitialize() may raise if already initialized, which is fine
-            try:
-                pythoncom.CoInitialize()
-            except Exception as e:
-                logger.debug(
-                    f"CoInitialize: {e} (may already be initialized for thread)"
-                )
-
-            # Try to get existing instance
-            max_retries = 3
-            for attempt in range(max_retries):
+            if sys.platform == "win32" and pythoncom is not None:
                 try:
-                    self.application = self._get_active_com_object()
-                    logger.info(
-                        f"{self.cad_type} instance found (active via GetActiveObject)"
-                    )
-                    break
+                    pythoncom.CoInitialize()
                 except Exception as e:
-                    if attempt == max_retries - 1:
-                        logger.debug(
-                            f"GetActiveObject for {self.config.prog_id} failed after {max_retries} attempts: {e}"
-                        )
-                    else:
-                        pythoncom.CoInitialize()  # Re-init just in case
-                        import time
+                    logger.debug(f"CoInitialize: {e}")
 
-                        time.sleep(0.5)
-                        continue
+            # Try to get existing running instance
+            try:
+                self.application = self._get_active_com_object()
+                logger.info(
+                    f"{self.cad_type} instance found (active via GetActiveObject)"
+                )
+            except Exception as e:
+                if is_com_busy_error(e):
+                    get_com_worker().circuit_breaker.record_busy(self.cad_type, str(e))
+                    logger.warning(f"{self.cad_type} is busy: {e}")
+                    if isinstance(e, CADBusyError):
+                        raise
+                    raise CADBusyError(self.cad_type, str(e)) from e
 
-                # Start new instance
-                if only_if_running:
+                if only_if_running or not allow_launch:
                     logger.debug(
-                        f"{self.cad_type} not running and only_if_running=True. Skipping launch."
+                        f"{self.cad_type} not running (only_if_running={only_if_running}, allow_launch={allow_launch}). Skipping launch."
                     )
                     return False
 
-                logger.info(f"{self.cad_type} not running, starting new instance...")
+                # Launch only when allow_launch=True and only_if_running=False (session/start)
+                logger.info(
+                    f"Explicit user start requested: launching new {self.cad_type} instance..."
+                )
                 try:
                     dispatch_id = getattr(self.config, "com_clsid", None) or self.config.prog_id
                     self.application = win32com.client.Dispatch(dispatch_id)
-                except pywintypes.com_error as com_err:
-                    error_code = com_err.args[0] if com_err.args else None
+                except Exception as com_err:
+                    error_code = getattr(com_err, "args", [None])[0]
                     if error_code == -2147221005:
                         error_msg = (
                             f"Invalid ProgID '{self.config.prog_id}'. "
@@ -138,7 +163,7 @@ class ConnectionMixin:
                     logger.error(
                         f"Failed to create {self.cad_type} instance: {error_msg}"
                     )
-                    raise CADConnectionError(self.cad_type, error_msg)
+                    raise CADConnectionError(self.cad_type, error_msg) from com_err
 
                 if self.application is not None:
                     # Try to make application visible (not all CAD types support this)
@@ -159,29 +184,42 @@ class ConnectionMixin:
 
             # Get active document or create new
             if self.application is not None:
-                # Standard AutoCAD/ZWCAD/BricsCAD/GstarCAD handling
-                if self.application.Documents.Count > 0:
-                    self.document = self.application.ActiveDocument
-                    logger.info("Using existing active document")
-                else:
-                    self.document = self.application.Documents.Add()
-                    logger.info("Created new document")
+                try:
+                    try:
+                        has_docs = int(self.application.Documents.Count) > 0
+                    except (TypeError, ValueError):
+                        has_docs = bool(self.application.Documents.Count)
+
+                    if has_docs:
+                        self.document = self.application.ActiveDocument
+                        logger.info("Using existing active document")
+                    else:
+                        self.document = self.application.Documents.Add()
+                        logger.info("Created new document")
+                except Exception as doc_err:
+                    if is_com_busy_error(doc_err):
+                        get_com_worker().circuit_breaker.record_busy(self.cad_type, str(doc_err))
+                        raise CADBusyError(self.cad_type, f"AutoCAD busy while accessing document: {doc_err}") from doc_err
+                    raise CADConnectionError(self.cad_type, f"Failed accessing document: {doc_err}") from doc_err
 
             # Validate connection
             if not self._validate_document():
                 raise CADConnectionError(self.cad_type, "Document validation failed")
 
-            logger.info(f"✓ Successfully connected to {self.cad_type}")
+            get_com_worker().circuit_breaker.record_success()
+            logger.info(f"Connected to {self.cad_type}")
 
             return True
 
-        except pywintypes.com_error as e:
+        except (CADBusyError, CADConnectionError):
+            raise
+        except Exception as e:
+            if is_com_busy_error(e):
+                get_com_worker().circuit_breaker.record_busy(self.cad_type, str(e))
+                raise CADBusyError(self.cad_type, str(e)) from e
             error_msg = f"COM error: {str(e)}"
             logger.error(f"Failed to connect to {self.cad_type}: {error_msg}")
-            raise CADConnectionError(self.cad_type, error_msg)
-        except Exception as e:
-            logger.error(f"Failed to connect to {self.cad_type}: {e}")
-            raise CADConnectionError(self.cad_type, str(e))
+            raise CADConnectionError(self.cad_type, error_msg) from e
 
     def disconnect(self) -> bool:
         """Disconnect from CAD application with COM cleanup."""
@@ -189,7 +227,11 @@ class ConnectionMixin:
             if self.application:
                 self.application = None
                 self.document = None
-            pythoncom.CoUninitialize()
+            if sys.platform == "win32" and pythoncom is not None:
+                try:
+                    pythoncom.CoUninitialize()
+                except Exception:
+                    pass
             logger.info(f"Disconnected from {self.cad_type}")
             return True
         except Exception as e:
@@ -210,9 +252,9 @@ class ConnectionMixin:
         Raises:
             CADConnectionError: If connection fails
         """
-        if not self.connect():
+        if not self.connect(only_if_running=True, allow_launch=False):
             raise CADConnectionError(
-                self.cad_type, "Connection failed during context manager initialization"
+                self.cad_type, "Connection failed during context manager initialization (CAD not running)"
             )
         return self
 
@@ -244,7 +286,9 @@ class ConnectionMixin:
                 return False
             _ = self.document.Name
             return True
-        except Exception:
+        except Exception as e:
+            if is_com_busy_error(e):
+                raise CADBusyError(self.cad_type, f"AutoCAD busy during document validation: {e}") from e
             return False
 
     def check_document_change(self) -> bool:

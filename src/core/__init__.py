@@ -16,6 +16,7 @@ from .exceptions import (
     TopoSpatialError,
     MultiCADError,
     CADConnectionError,
+    CADBusyError,
     CADOperationError,
     InvalidParameterError,
     CoordinateError,

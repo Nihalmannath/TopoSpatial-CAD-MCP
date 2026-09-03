@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "topospatial-cad-mcp"
-version = "0.3.0"
+version = "3.0.0"
 description = "TopoSpatial-CAD MCP: Spatial Topology & Semantic Architectural CAD Intelligence MCP Server"
 readme = "README.md"
 requires-python = ">=3.10"

@@ -75,7 +75,9 @@ def register_design_tools(mcp: Any) -> None:
             )
 
         adapter = (
-            None if parsed.action in {"metrics", "get_result"} else get_adapter(None)
+            None
+            if parsed.action in {"metrics", "get_result"}
+            else get_adapter(None, only_if_running=True)
         )
         result = _orchestrator.execute(parsed, adapter)
         indent = 2 if parsed.detail_level == "debug" else None

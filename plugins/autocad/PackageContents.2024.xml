@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ApplicationPackage
+  SchemaVersion="1.0"
+  AutodeskProduct="AutoCAD"
+  Name="TopoSpatial Studio"
+  Description="Visual topology, circulation, and space programming studio for TopoSpatial-CAD MCP"
+  AppVersion="0.3.0"
+  ProductCode="{28F81A3A-2154-470A-95F7-BB465AB99744}"
+  UpgradeCode="{0F042ED5-B4D6-42A5-89B5-F846F7C26C9D}">
+  <CompanyDetails Name="TopoSpatial-CAD MCP" />
+  <RuntimeRequirements OS="Win64" Platform="AutoCAD*" SeriesMin="R24.3" SeriesMax="R24.3" />
+  <Components Description="TopoSpatial editor palette and CAD change notifier">
+    <ComponentEntry
+      AppName="TopoSpatial.AutoCAD.2024"
+      Version="0.3.0"
+      ModuleName="./Contents/Windows/2024/TopoSpatial.AutoCAD.2024.dll"
+      AppDescription="Opens the local TopoSpatial studio and reports coalesced CAD changes"
+      LoadOnAutoCADStartup="True">
+      <Commands GroupName="TOPOSTUDIO_COMMANDS">
+        <Command Global="TOPOSTUDIO" Local="TOPOSTUDIO" />
+        <Command Global="TOPOSTUDIORELOAD" Local="TOPOSTUDIORELOAD" />
+        <Command Global="TOPOSTUDIOEVENTS" Local="TOPOSTUDIOEVENTS" />
+        <Command Global="TOPOSTATUS" Local="TOPOSTATUS" />
+        <Command Global="TOPOZOOM" Local="TOPOZOOM" />
+        <Command Global="TOPOPROGRAM" Local="TOPOPROGRAM" />
+      </Commands>
+    </ComponentEntry>
+  </Components>
+</ApplicationPackage>

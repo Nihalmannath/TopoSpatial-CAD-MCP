@@ -25,6 +25,23 @@ class CADConnectionError(TopoSpatialError):
         super().__init__(f"Failed to connect to {cad_type}: {reason}")
 
 
+class CADBusyError(CADConnectionError):
+    """Raised when the CAD application is busy (modal dialog, rejected call).
+
+    A busy CAD must NEVER be treated as "not running": launching a new
+    instance via ``Dispatch()`` in this state is what triggers duplicate
+    ``acad.exe`` processes and Autodesk license-checkout contention.
+    """
+
+    def __init__(self, cad_type: str, reason: str):
+        self.cad_type = cad_type
+        self.reason = reason
+        super().__init__(cad_type, reason)
+
+    def __str__(self) -> str:
+        return f"CAD_BUSY: {self.cad_type} is busy or unresponsive: {self.reason}"
+
+
 class CADOperationError(TopoSpatialError):
     """Raised when a CAD operation fails."""
 

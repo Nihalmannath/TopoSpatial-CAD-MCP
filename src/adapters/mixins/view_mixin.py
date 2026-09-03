@@ -12,9 +12,18 @@ import re
 import time
 from typing import TYPE_CHECKING, Dict
 
-import win32con
-import win32gui
-import win32ui
+import sys
+
+if sys.platform == "win32":
+    import win32con
+    import win32gui
+    import win32ui
+else:
+    from unittest.mock import MagicMock
+    win32con = MagicMock()
+    win32gui = MagicMock()
+    win32ui = MagicMock()
+
 from PIL import Image, ImageGrab
 
 logger = logging.getLogger(__name__)
@@ -335,41 +344,37 @@ class ViewMixin:
             return False
 
     def refresh_view(self) -> bool:
-        """Refresh the view using multiple techniques for maximum compatibility.
+        """Refresh the active viewport using available techniques.
 
-        Uses a combination of techniques in fallback order:
-        1. Application.Refresh() (COM API - no undo/redo impact)
-        2. SendCommand with REDRAW (most reliable visual update)
-        3. Window click simulation (forces UI update)
-
-        Note: REDRAW command is not wrapped in UNDO to avoid complicating
-        the undo/redo stack. If refresh_view is called during user operations,
-        the REDRAW will be undone by the user's undo command anyway.
+        Attempts native COM Document.Regen(1) and Application.Refresh(),
+        followed by SendCommand REDRAW and window click simulation.
 
         Returns:
-            True if refresh was attempted (best effort approach)
+            True if refresh was attempted successfully, False otherwise.
         """
         try:
-            application = self._get_application("refresh_view")
-            document = self._get_document("refresh_view")
-
-            # Technique 1: COM API Refresh (doesn't affect undo/redo)
             try:
+                document = self._get_document("refresh_view")
+                document.Regen(1)
+                logger.debug("Refresh: document.Regen(1) executed")
+            except Exception:
+                pass
+
+            try:
+                application = self._get_application("refresh_view")
                 application.Refresh()
                 logger.debug("Refresh: COM Refresh executed")
             except Exception as e:
                 logger.debug(f"COM Refresh failed: {e}")
 
-            # Technique 2: Send REDRAW command (most reliable visual update)
             try:
+                document = self._get_document("refresh_view")
                 document.SendCommand("_redraw\n")
                 logger.debug("Refresh: REDRAW command sent")
             except Exception as e:
                 logger.debug(f"REDRAW command failed: {e}")
 
-            # Technique 3: Simulate click on CAD window (forces UI update)
             self._simulate_autocad_click()
-
             return True
         except Exception as e:
             logger.debug(f"refresh_view error: {e}")

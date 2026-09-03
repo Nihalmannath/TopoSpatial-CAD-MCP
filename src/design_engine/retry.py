@@ -19,6 +19,8 @@ class RetryPolicy:
         "call was rejected by callee",
         "server busy",
         "application is busy",
+        "servercall_retrylater",
+        "cad_busy",
     )
 
     def run(
