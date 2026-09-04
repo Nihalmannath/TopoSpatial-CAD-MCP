@@ -62,3 +62,6 @@ Thumbs.db
 
 # MkDocs generated site
 site/
+
+# MCP bundle packages
+*.mcpb

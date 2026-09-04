@@ -37,6 +37,9 @@ def test_manage_design_schema_is_discriminated_by_action() -> None:
         "cancel",
         "rollback",
         "metrics",
+        "get_editor_request",
+        "get_draft_context",
+        "preview_editor_request",
     }
 
 

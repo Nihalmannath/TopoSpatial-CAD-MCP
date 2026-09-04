@@ -1,0 +1,45 @@
+{
+  "$schema": "https://raw.githubusercontent.com/modelcontextprotocol/registry/main/docs/reference/server-json/draft/server.schema.json",
+  "name": "io.github.Nihalmannath/topospatial-cad-mcp",
+  "title": "TopoSpatial CAD MCP",
+  "version": "3.0.0",
+  "description": "Architectural CAD and spatial topology intelligence MCP server for AutoCAD.",
+  "repository": "https://github.com/Nihalmannath/TopoSpatial-CAD-MCP",
+  "license": "Apache-2.0",
+  "author": {
+    "name": "Nihal Mannath",
+    "url": "https://github.com/Nihalmannath"
+  },
+  "command": "python",
+  "args": [
+    "-m",
+    "server.main"
+  ],
+  "env": {
+    "PYTHONUNBUFFERED": "1",
+    "PYTHONIOENCODING": "utf-8"
+  },
+  "icons": [
+    {
+      "src": "https://raw.githubusercontent.com/Nihalmannath/TopoSpatial-CAD-MCP/main/packaging/assets/icon.png",
+      "mimeType": "image/png",
+      "sizes": [
+        "256x256"
+      ]
+    }
+  ],
+  "inputs": [
+    {
+      "name": "cad_platform",
+      "description": "CAD application name (autocad, zwcad, gstarcad, bricscad)",
+      "default": "autocad",
+      "isRequired": false
+    },
+    {
+      "name": "cad_version",
+      "description": "AutoCAD release year (2024-2027) or auto-detect",
+      "default": "auto",
+      "isRequired": false
+    }
+  ]
+}
