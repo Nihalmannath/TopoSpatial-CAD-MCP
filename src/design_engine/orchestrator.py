@@ -22,10 +22,13 @@ from .models import (
     DesignRequest,
     ExecutionPlan,
     GetContextDesignRequest,
+    GetDraftContextDesignRequest,
+    GetEditorRequestDesignRequest,
     GetResultDesignRequest,
     InspectDesignRequest,
     MetricsDesignRequest,
     PlanDesignRequest,
+    PreviewEditorRequestDesignRequest,
     TransactionDesignRequest,
 )
 from .observability import MetricsStore
@@ -115,6 +118,8 @@ class DesignOrchestrator:
                 }
             elif isinstance(request, GetResultDesignRequest):
                 result = self._get_result(request, task_id)
+            elif isinstance(request, GetEditorRequestDesignRequest) or getattr(request, "action", "") == "get_editor_request":
+                result = self._get_editor_request(request, task_id)
             else:
                 if adapter is None:
                     raise RuntimeError("A CAD connection is required for this action")
@@ -146,6 +151,10 @@ class DesignOrchestrator:
             return self._inspect(request, adapter, task_id)
         if isinstance(request, GetContextDesignRequest) or action == "get_context":
             return self._get_context(request, adapter, task_id)
+        if isinstance(request, GetDraftContextDesignRequest) or action == "get_draft_context":
+            return self._get_draft_context(request, adapter, task_id)
+        if isinstance(request, PreviewEditorRequestDesignRequest) or action == "preview_editor_request":
+            return self._preview_editor_request(request, adapter, task_id)
         if isinstance(request, PlanDesignRequest) or action in {"create", "modify", "validate", "preview"}:
             return self._plan(request, adapter, task_id)
         if isinstance(request, TransactionDesignRequest) or action in {"apply", "cancel", "rollback"}:
@@ -155,6 +164,84 @@ class DesignOrchestrator:
                 return self._cancel(request, task_id)
             return self._rollback(request, adapter, task_id)
         raise ValueError(f"Unsupported design action '{action}'")
+
+    def _get_editor_request(
+        self, request: GetEditorRequestDesignRequest, task_id: str
+    ) -> Dict[str, Any]:
+        from .service import application_service
+        editor_req = application_service.workspace.get_editor_request(
+            request.request_id, detail_level=request.detail_level
+        )
+        return {
+            "success": True,
+            "task_id": task_id,
+            "request": editor_req,
+        }
+
+    def _get_draft_context(
+        self, request: GetDraftContextDesignRequest, adapter: Any, task_id: str
+    ) -> Dict[str, Any]:
+        from .service import application_service
+        drawing = request.drawing_name or (adapter.document.Name if adapter and adapter.document else "")
+        context = application_service.workspace.draft_context(
+            drawing, detail_level=request.detail_level
+        )
+        return {
+            "success": True,
+            "task_id": task_id,
+            "drawing": drawing,
+            "context": context,
+        }
+
+    def _preview_editor_request(
+        self, request: PreviewEditorRequestDesignRequest, adapter: Any, task_id: str
+    ) -> Dict[str, Any]:
+        from .service import application_service
+        from topology_engine.models import TopologyChange
+        editor_req = application_service.workspace.get_editor_request(
+            request.request_id, detail_level="debug"
+        )
+        drawing = editor_req.get("drawing_name", "")
+        changes: List[TopologyChange] = []
+        for action in editor_req.get("actions", []):
+            for tc in action.get("topology_changes", []):
+                changes.append(TopologyChange.model_validate(tc))
+
+        if not changes:
+            from .workspace import DraftRequest
+            ws = application_service.current_workspace(adapter, expected_drawing=drawing)
+            draft_req = DraftRequest.model_validate(
+                {
+                    "drawing_name": drawing,
+                    "base_drawing_revision": editor_req.get("base_drawing_revision", ws["drawing_revision"]),
+                    "base_graph_revision": editor_req.get("base_graph_revision", ws["graph_revision"]),
+                    "commands": [
+                        cmd
+                        for action in editor_req.get("actions", [])
+                        for cmd in action.get("commands", [])
+                    ],
+                }
+            )
+            preview_res = application_service.workspace.preview(draft_req, ws["graph"])
+            tx_id = preview_res.get("transaction_id")
+            application_service.workspace.mark_design_transaction(request.request_id, tx_id)
+            return {
+                "success": True,
+                "task_id": task_id,
+                "preview": preview_res,
+                "status": "preview_ready",
+            }
+
+        plan_req = PlanDesignRequest(
+            action="preview",
+            base_revision=editor_req.get("base_drawing_revision"),
+            changes=changes,
+        )
+        result = self._plan(plan_req, adapter, task_id)
+        tx_id = result.get("transaction_id")
+        application_service.workspace.mark_design_transaction(request.request_id, tx_id)
+        result["status"] = "preview_ready"
+        return result
 
     def _get_result(
         self, request: GetResultDesignRequest, task_id: str

@@ -618,10 +618,21 @@ async def api_editor_save_draft(payload: Dict[str, Any]) -> dict:
     from design_engine.workspace import WorkingDraftRequest
     request = WorkingDraftRequest.model_validate(payload)
     drawing = request.drawing_name
-    workspace = application_service.cached_workspace(
-        drawing, request.base_drawing_revision, request.base_graph_revision
-    )
-    base_graph = workspace["graph"]
+    try:
+        workspace = application_service.cached_workspace(
+            drawing, request.base_drawing_revision, request.base_graph_revision
+        )
+        base_graph = workspace["graph"]
+    except Exception:
+        from adapters.adapter_manager import get_adapter
+        from adapters.com_worker import run_com
+        adapter = get_adapter(only_if_running=True)
+        if adapter:
+            workspace = run_com(lambda: application_service.current_workspace(adapter), cad_type="autocad")
+            base_graph = workspace["graph"]
+        else:
+            raise HTTPException(status_code=503, detail="CAD not connected and workspace not cached")
+
     result = application_service.workspace.evaluate_draft(request, base_graph)
     application_service.events.publish("workspace.updated", {"drawing": drawing, "draft": result})
     return {"success": True, **result}
@@ -689,10 +700,22 @@ async def api_editor_preview_draft(payload: Dict[str, Any]) -> dict:
     from design_engine.workspace import DraftRequest
     request = DraftRequest.model_validate(payload)
     drawing = request.drawing_name
-    workspace = application_service.cached_workspace(
-        drawing, request.base_drawing_revision, request.base_graph_revision
-    )
-    preview = application_service.workspace.preview(request, workspace["graph"])
+    try:
+        workspace = application_service.cached_workspace(
+            drawing, request.base_drawing_revision, request.base_graph_revision
+        )
+        base_graph = workspace["graph"]
+    except Exception:
+        from adapters.adapter_manager import get_adapter
+        from adapters.com_worker import run_com
+        adapter = get_adapter(only_if_running=True)
+        if adapter:
+            workspace = run_com(lambda: application_service.current_workspace(adapter), cad_type="autocad")
+            base_graph = workspace["graph"]
+        else:
+            raise HTTPException(status_code=503, detail="CAD not connected and workspace not cached")
+
+    preview = application_service.workspace.preview(request, base_graph)
     return {"success": True, **preview}
 
 

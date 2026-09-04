@@ -202,21 +202,52 @@ topology operations:
 
 ## Installation & Setup
 
-### Prerequisites
-- **Windows OS** (COM automation)
-- **Python 3.10+**
-- A running, COM-capable **AutoCAD, AutoCAD Architecture, ZWCAD, GstarCAD, or
-  BricsCAD** installation
-- **AutoCAD Architecture** is required only for native AEC objects; other
-  products use standard entity fallback
+### Method 1: 1-Click MCP Bundle (`.mcpb`) for Claude Desktop (Recommended)
 
-### 1. Quick Install
+The easiest way to install TopoSpatial CAD into Claude Desktop without manual terminal configuration:
+
+#### Requirements
+- **Windows 10 / 11** (64-bit)
+- **AutoCAD 2024–2027** (or ZWCAD / GstarCAD / BricsCAD)
+- **Claude Desktop** for Windows
+
+#### 1-Click Steps
+1. **Download** [`TopoSpatial-CAD-MCP-v3.0.0.mcpb`](https://github.com/Nihalmannath/TopoSpatial-CAD-MCP/releases) from GitHub Releases.
+2. **Double-click** the `.mcpb` file (or drag & drop into Claude Desktop).
+3. In Claude Desktop, click **Install**.
+4. **Start AutoCAD** and open your architectural drawing (`.dwg`).
+5. In Claude Desktop, enable **TopoSpatial CAD** and begin designing!
+
+#### Pre-flight CAD Health Doctor
+To verify AutoCAD COM communication and python dependencies at any time:
+```bash
+python -m server.main --doctor
+```
+*(Or double-click `autodesk/check_cad_health.bat`)*
+
+---
+
+### Method 2: Official MCP Registry
+
+TopoSpatial-CAD is registered in the Official MCP Registry:
+```bash
+# Discover or install via MCP Registry namespace
+io.github.Nihalmannath/topospatial-cad-mcp
+```
+Publishers and maintainers can validate and sync metadata using `mcp-publisher`:
+```bash
+mcp-publisher validate
+mcp-publisher publish
+```
+
+---
+
+### Method 3: Developer / Source Installation
+
+For developers customizing tools or writing custom plugins:
 
 ```powershell
-# Install uv package manager (if needed)
-powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-
-# Clone and setup environment
+# Clone repository
 git clone https://github.com/Nihalmannath/TopoSpatial-CAD-MCP.git
 cd TopoSpatial-CAD-MCP
 
@@ -230,11 +261,7 @@ To enable the optional, pinned TopologicPy spatial topology engine:
 uv sync --extra dev --extra topology
 ```
 
-This installs `topologicpy==0.9.65` and `topologic-core==8.0.4`. The server
-forces the verified `topologic_core` backend before importing TopologicPy.
-
-### 2. Claude Desktop Integration
-
+#### Manual Claude Desktop Config
 Add to `%APPDATA%\Claude\claude_desktop_config.json`:
 
 ```json
@@ -366,5 +393,5 @@ TopoSpatial-CAD-MCP/
 
 ## Author & License
 
-- **Author**: [Nihal Ahmed Mannath](https://github.com/Nihalmannath) (`nihalmannat@gmail.com`)
+- **Author**: [Nihal Ahmed Mannath](https://github.com/Nihalmannath)
 - **License**: [Apache License 2.0](LICENSE)

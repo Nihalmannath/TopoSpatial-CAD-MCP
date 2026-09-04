@@ -97,6 +97,27 @@ class MetricsDesignRequest(_RequestBase):
         return self
 
 
+class GetEditorRequestDesignRequest(_RequestBase):
+    """Read a pending or stored editor handoff request without CAD access."""
+
+    action: Literal["get_editor_request"]
+    request_id: str = Field(min_length=1, max_length=128)
+
+
+class GetDraftContextDesignRequest(_RequestBase):
+    """Read compact draft context and affected semantic entities for an active draft."""
+
+    action: Literal["get_draft_context"]
+    drawing_name: Optional[str] = Field(default=None, max_length=256)
+
+
+class PreviewEditorRequestDesignRequest(_RequestBase):
+    """Validate and preview a stored editor request as a design transaction."""
+
+    action: Literal["preview_editor_request"]
+    request_id: str = Field(min_length=1, max_length=128)
+
+
 DesignRequest = Annotated[
     Union[
         InspectDesignRequest,
@@ -105,6 +126,9 @@ DesignRequest = Annotated[
         PlanDesignRequest,
         TransactionDesignRequest,
         MetricsDesignRequest,
+        GetEditorRequestDesignRequest,
+        GetDraftContextDesignRequest,
+        PreviewEditorRequestDesignRequest,
     ],
     Field(discriminator="action"),
 ]
