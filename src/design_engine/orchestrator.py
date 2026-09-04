@@ -177,8 +177,18 @@ class DesignOrchestrator:
         }
 
     def _snapshot_and_analysis(
-        self, adapter: Any, scope: str, task_id: str
+        self,
+        adapter: Any,
+        scope: str,
+        task_id: str,
+        expected_drawing: Optional[str] = None,
     ) -> Tuple[Any, Dict[str, Any], bool]:
+        if expected_drawing and hasattr(adapter, "document") and adapter.document:
+            try:
+                if adapter.document.Name != expected_drawing and hasattr(adapter, "switch_drawing"):
+                    adapter.switch_drawing(expected_drawing)
+            except Exception:
+                pass
         snapshot, retries = self._run_cad(
             adapter, lambda: self.bridge.snapshot(adapter, scope)
         )

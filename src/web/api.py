@@ -340,7 +340,17 @@ async def get_index() -> FileResponse:
 @api_app.get("/api/health")
 async def api_health() -> dict:
     """Health check endpoint."""
-    return {"status": "ok", "version": __version__}
+    try:
+        from web.runtime import BUILD_ID, read_runtime_state
+        mcp_state = read_runtime_state("mcp")
+        return {
+            "status": "ok",
+            "version": __version__,
+            "build_id": BUILD_ID,
+            "active_mcp": mcp_state,
+        }
+    except Exception:
+        return {"status": "ok", "version": __version__}
 
 
 @api_app.get("/api/debug/registry")
@@ -553,6 +563,7 @@ async def api_logs(since: int = Query(default=0, ge=0)) -> dict:
 
 
 @api_app.get("/editor")
+@api_app.get("/editor/")
 async def get_editor_index() -> FileResponse:
     """Serve the visual topology editor."""
     editor_index = STATIC_DIR / "editor" / "index.html"
@@ -565,6 +576,175 @@ async def get_editor_index() -> FileResponse:
 async def api_editor_session() -> dict:
     """Get current process-local editor session token."""
     return {"success": True, "token": _editor_session_token}
+
+
+@api_app.get("/api/editor/workspace")
+async def api_editor_workspace(
+    include_candidates: bool = Query(default=True),
+    expected_drawing: Optional[str] = Query(default=None),
+) -> dict:
+    """Return the merged semantic graph, CAD underlay, and readiness diagnostics."""
+    from adapters.adapter_manager import get_adapter
+    from adapters.com_worker import run_com
+
+    adapter = get_adapter(only_if_running=True)
+    if not adapter:
+        raise HTTPException(status_code=503, detail="CAD is not connected or running")
+
+    def _extract():
+        return application_service.current_workspace(
+            adapter,
+            include_candidates=include_candidates,
+            expected_drawing=expected_drawing,
+        )
+
+    try:
+        return run_com(_extract, cad_type="autocad")
+    except Exception as e:
+        logger.error(f"Failed to fetch editor workspace: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_app.get("/api/editor/draft")
+async def api_editor_get_draft(drawing_name: str = Query(...)) -> dict:
+    """Get the current working draft payload for a drawing."""
+    draft = application_service.workspace.working_draft_payload(drawing_name)
+    return {"success": True, "draft": draft}
+
+
+@api_app.post("/api/editor/draft")
+async def api_editor_save_draft(payload: Dict[str, Any]) -> dict:
+    """Evaluate and persist an updated editor working draft."""
+    from design_engine.workspace import WorkingDraftRequest
+    request = WorkingDraftRequest.model_validate(payload)
+    drawing = request.drawing_name
+    workspace = application_service.cached_workspace(
+        drawing, request.base_drawing_revision, request.base_graph_revision
+    )
+    base_graph = workspace["graph"]
+    result = application_service.workspace.evaluate_draft(request, base_graph)
+    application_service.events.publish("workspace.updated", {"drawing": drawing, "draft": result})
+    return {"success": True, **result}
+
+
+@api_app.delete("/api/editor/draft")
+async def api_editor_delete_draft(drawing_name: str = Query(...)) -> dict:
+    """Reset any uncommitted draft for a drawing."""
+    application_service.workspace.reset_draft(drawing_name)
+    application_service.events.publish("workspace.reset", {"drawing": drawing_name})
+    return {"success": True}
+
+
+@api_app.get("/api/editor/handoffs")
+async def api_editor_list_handoffs(
+    drawing_name: str = Query(...), limit: int = Query(default=20)
+) -> dict:
+    """List pending and historical MCP editor requests for a drawing."""
+    requests = application_service.workspace.list_editor_requests(drawing_name, limit=limit)
+    return {"success": True, "requests": requests}
+
+
+@api_app.post("/api/editor/handoffs")
+async def api_editor_create_handoff(payload: Dict[str, Any]) -> dict:
+    """Submit a draft handoff request to the MCP queue."""
+    req = application_service.workspace.create_editor_request(
+        drawing_name=payload.get("drawing_name", ""),
+        draft_revision=payload.get("draft_revision", ""),
+        requested_action=payload.get("requested_action", "review_and_preview"),
+        user_note=payload.get("user_note", ""),
+    )
+    application_service.events.publish("handoff.created", {"request": req})
+    return {"success": True, "request": req, "mutated": False}
+
+
+@api_app.post("/api/editor/handoffs/{request_id}/withdraw")
+async def api_editor_withdraw_handoff(request_id: str) -> dict:
+    """Withdraw a pending editor handoff request."""
+    req = application_service.workspace.set_editor_request_status(request_id, "withdrawn")
+    application_service.events.publish("handoff.withdrawn", {"request_id": request_id})
+    return {"success": True, "request": req}
+
+
+@api_app.post("/api/editor/draft/rebase")
+async def api_editor_rebase_draft(payload: Dict[str, Any]) -> dict:
+    """Rebase an existing draft against updated CAD geometry."""
+    drawing = payload.get("drawing_name", "")
+    resolutions = payload.get("resolutions")
+    from adapters.adapter_manager import get_adapter
+    from adapters.com_worker import run_com
+    adapter = get_adapter(only_if_running=True)
+    if not adapter:
+        raise HTTPException(status_code=503, detail="CAD not connected")
+    workspace = run_com(lambda: application_service.current_workspace(adapter), cad_type="autocad")
+    rebased = application_service.workspace.rebase_draft(
+        drawing, workspace["graph"], resolutions=resolutions
+    )
+    application_service.events.publish("workspace.rebased", {"drawing": drawing, "draft": rebased})
+    return {"success": True, **rebased}
+
+
+@api_app.post("/api/editor/preview")
+async def api_editor_preview_draft(payload: Dict[str, Any]) -> dict:
+    """Validate and preview staged draft commands against CAD."""
+    from design_engine.workspace import DraftRequest
+    request = DraftRequest.model_validate(payload)
+    drawing = request.drawing_name
+    workspace = application_service.cached_workspace(
+        drawing, request.base_drawing_revision, request.base_graph_revision
+    )
+    preview = application_service.workspace.preview(request, workspace["graph"])
+    return {"success": True, **preview}
+
+
+@api_app.post("/api/editor/apply")
+async def api_editor_apply(payload: Dict[str, Any]) -> dict:
+    """Apply a previewed design transaction."""
+    from adapters.adapter_manager import get_adapter
+    from adapters.com_worker import run_com
+    adapter = get_adapter(only_if_running=True)
+    if not adapter:
+        raise HTTPException(status_code=503, detail="CAD not connected")
+    tx_id = payload.get("transaction_id") or payload.get("design_transaction_id")
+    result = run_com(
+        lambda: application_service.orchestrator.apply(adapter, tx_id),
+        cad_type="autocad",
+    )
+    application_service.events.publish("workspace.applied", payload)
+    return {"success": True, **result}
+
+
+@api_app.post("/api/editor/cancel")
+async def api_editor_cancel(payload: Dict[str, Any]) -> dict:
+    """Discard a previewed design transaction without mutating CAD."""
+    drawing = payload.get("drawing_name", "")
+    tx_id = payload.get("transaction_id") or payload.get("design_transaction_id")
+    result = application_service.workspace.cancel(drawing, tx_id)
+    return {"success": True, **result}
+
+
+@api_app.post("/api/editor/route")
+async def api_editor_route(payload: Dict[str, Any]) -> dict:
+    """Calculate an optimal circulation route between two spaces."""
+    from topology_engine.navigation import find_route
+    drawing = payload.get("drawing_name", "")
+    start = payload.get("start", "")
+    end = payload.get("end", "")
+    draft = application_service.workspace.working_draft(drawing)
+    if draft and "graph" in draft:
+        graph = draft["graph"]
+    else:
+        with application_service._workspace_lock:
+            ws = application_service._workspace_cache.get(drawing.casefold(), {})
+        graph = ws.get("graph", {"@graph": []})
+    route_result = find_route(graph, start, end)
+    return {"success": True, **route_result}
+
+
+@api_app.post("/api/editor/cad-event")
+async def api_editor_cad_event(payload: Dict[str, Any]) -> dict:
+    """Receive coalesced CAD document change notifications from the AutoCAD plugin."""
+    application_service.events.publish("cad.changed", payload)
+    return {"success": True}
 
 
 @api_app.websocket("/api/editor/events")
