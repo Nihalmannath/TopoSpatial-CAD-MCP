@@ -457,10 +457,38 @@ def bridge_openings(
     runs: List[Run], joined: Dict[Tuple[int, str], bool], dark: np.ndarray,
     min_gap: float, max_door: float, max_window: float, max_separator: float,
     window_mask: Optional[np.ndarray] = None,
+    door_mask: Optional[np.ndarray] = None,
+    require_door_evidence: bool = False,
 ) -> Tuple[List[Run], List[Opening], List[Segment]]:
     """Close wall gaps. Glazed gaps become windows, door-sized empty gaps
     become doors (both bridged with wall), and wider empty gaps between
-    collinear wall pieces become room separators (open plan, no wall)."""
+    collinear wall pieces become room separators (open plan, no wall).
+
+    With ``require_door_evidence`` (off by default) an empty gap is a door
+    only when a door swing is drawn beside it or the network's door mask
+    covers it; a bare gap becomes an open passage. On ResPlan renders this
+    cut classic door F1 from 0.76 to 0.51 because ``_detect_swing`` misses
+    most drawn swings, and left J unchanged (0.72 -> 0.73); keep it off
+    until swing detection is fixed.
+    """
+    def is_door(axis: str, c: float, lo: float, hi: float, t: float) -> bool:
+        if not require_door_evidence:
+            return True
+        probe = Opening("door", axis, c, lo, hi)
+        _detect_swing(dark, probe, t)
+        if probe.swing_detected:
+            return True
+        if door_mask is not None:
+            h = max(2, int(round(t)))
+            if axis == "h":
+                y0, y1, x0, x1 = int(c - h), int(c + h) + 1, int(lo), int(hi) + 1
+            else:
+                y0, y1, x0, x1 = int(lo), int(hi) + 1, int(c - h), int(c + h) + 1
+            patch = door_mask[max(0, y0):max(0, y1), max(0, x0):max(0, x1)]
+            if patch.size and float((patch > 0).mean()) >= 0.15:
+                return True
+        return False
+
     openings: List[Opening] = []
     separators: List[Segment] = []
     merged_into: Dict[int, int] = {}
@@ -490,7 +518,7 @@ def bridge_openings(
             gap, idx_b = min(candidates)
             b = runs[idx_b]
             window = gap <= max_window and _classify_window(dark, window_mask, a.axis, a.c, a.hi, b.lo, a.t)
-            if not window and gap > max_door:
+            if not window and (gap > max_door or not is_door(a.axis, (a.c + b.c) / 2, a.hi, b.lo, max(a.t, b.t))):
                 separators.append((_xy(a.axis, a.hi, a.c), _xy(a.axis, b.lo, b.c), (a.t + b.t) / 2))
                 break
             openings.append(Opening("window" if window else "door", a.axis, (a.c + b.c) / 2, a.hi, b.lo))
@@ -524,7 +552,7 @@ def bridge_openings(
             gap, p = best
             lo, hi = (value, p.c - p.t / 2) if sign > 0 else (p.c + p.t / 2, value)
             window = _classify_window(dark, window_mask, r.axis, r.c, lo, hi, r.t)
-            if not window and gap > max_door:
+            if not window and (gap > max_door or not is_door(r.axis, r.c, lo, hi, r.t)):
                 continue
             openings.append(Opening("window" if window else "door", r.axis, r.c, lo, hi))
             setattr(r, end, p.c)
@@ -1094,6 +1122,7 @@ def trace_image(
     wall_logit_bias: Optional[float] = None,
     stages: Optional[Dict[str, Any]] = None,
     close_rooms: Optional[bool] = None,
+    require_door_evidence: bool = False,
 ) -> Tuple[TraceResult, VisionReport]:
     """Recognise a raster floor plan. Returns the trace (pixel units, y-down,
     calibrated ``mm_per_unit``) and a report with intermediate results.
@@ -1253,7 +1282,8 @@ def trace_image(
         min_gap = max(thickness * 0.8, 450.0 / scale)
         runs, openings, separators = bridge_openings(
             runs, joined, dark, min_gap, max_door_mm / scale, max_window_mm / scale,
-            max_separator_mm / scale, window_mask,
+            max_separator_mm / scale, window_mask, door_mask,
+            require_door_evidence=require_door_evidence,
         )
         if window_mask is not None:
             openings += openings_from_icons(runs, openings, window_mask, door_mask, 450.0 / scale)
