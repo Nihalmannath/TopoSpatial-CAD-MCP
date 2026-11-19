@@ -54,7 +54,8 @@ def setup_logging() -> logging.Logger:
 # ========== Parsing Functions ==========
 
 # Precompiled regex for coordinate parsing
-_COORD_PATTERN = re.compile(r"(-?\d+\.?\d*)")
+# Signed decimals, leading-dot decimals (-.5) and scientific notation (1e3).
+_COORD_PATTERN = re.compile(r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?")
 
 
 def parse_coordinate(coord_str: str) -> tuple:
@@ -78,7 +79,15 @@ def parse_coordinate(coord_str: str) -> tuple:
             "coordinate", coord_str, "format like '10,20' or '10,20,30'"
         )
 
-    return tuple(float(m) for m in matches[:3])
+    if len(matches) > 3:
+        # Several points in one string used to be truncated silently into one
+        # 3D point; reject so the caller sees the real problem.
+        raise InvalidParameterError(
+            "coordinate",
+            coord_str,
+            "one point like '10,20' or '10,20,30' (separate points with ';')",
+        )
+    return tuple(float(m) for m in matches)
 
 
 def parse_handles(handles_str: str) -> list[str]:

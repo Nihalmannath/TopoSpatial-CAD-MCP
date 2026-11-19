@@ -6,6 +6,7 @@ Handles connection, disconnection, and validation methods.
 
 import logging
 import sys
+import time
 from typing import TYPE_CHECKING, Any
 
 if sys.platform == "win32":
@@ -18,17 +19,59 @@ else:
     pythoncom = MagicMock()
     pywintypes = MagicMock()
 
-from core import CADConnectionError, CADBusyError
+from core import CADConnectionError, CADBusyError, CADNoDocumentError
 from adapters.com_worker import (
     get_com_worker,
     is_com_busy_error,
     is_com_not_running_error,
+    ensure_default_desktop,
+    run_com,
 )
 
 if TYPE_CHECKING:
     from core.config import CADConfig
 
 logger = logging.getLogger(__name__)
+
+
+def _is_process_running_by_name(process_names: Any) -> bool:
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.windll.kernel32
+        TH32CS_SNAPPROCESS = 0x00000002
+        class PROCESSENTRY32W(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", wintypes.DWORD),
+                ("cntUsage", wintypes.DWORD),
+                ("th32ProcessID", wintypes.DWORD),
+                ("th32DefaultHeapID", ctypes.POINTER(wintypes.ULONG)),
+                ("th32ModuleID", wintypes.DWORD),
+                ("cntThreads", wintypes.DWORD),
+                ("th32ParentProcessID", wintypes.DWORD),
+                ("pcPriClassBase", wintypes.LONG),
+                ("dwFlags", wintypes.DWORD),
+                ("szExeFile", wintypes.WCHAR * 260),
+            ]
+        hSnapshot = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+        if hSnapshot == -1:
+            return False
+        entry = PROCESSENTRY32W()
+        entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+        target_names = {n.casefold() for n in process_names}
+        found = False
+        success = kernel32.Process32FirstW(hSnapshot, ctypes.byref(entry))
+        while success:
+            if entry.szExeFile.casefold() in target_names:
+                found = True
+                break
+            success = kernel32.Process32NextW(hSnapshot, ctypes.byref(entry))
+        kernel32.CloseHandle(hSnapshot)
+        return found
+    except Exception:
+        return False
 
 
 class ConnectionMixin:
@@ -56,6 +99,8 @@ class ConnectionMixin:
         if win32com is None:
             raise CADConnectionError(self.cad_type, "COM support is only available on Windows")
 
+        att = ensure_default_desktop()
+        print(f"[_get_active_com_object] ensure_default_desktop returned {att}", flush=True)
         try:
             return win32com.client.GetActiveObject(self.config.prog_id)
         except Exception as prog_id_error:
@@ -108,6 +153,11 @@ class ConnectionMixin:
             CADBusyError: If AutoCAD is busy, running a command, or in a modal dialog.
             CADConnectionError: If connection fails or CAD is not running.
         """
+        if not get_com_worker().is_current_thread():
+            return run_com(self._connect_impl, only_if_running, allow_launch)
+        return self._connect_impl(only_if_running, allow_launch)
+
+    def _connect_impl(self, only_if_running: bool = True, allow_launch: bool = False) -> bool:
         # Fast-fail if circuit breaker is open
         get_com_worker().circuit_breaker.check(self.cad_type)
 
@@ -117,11 +167,13 @@ class ConnectionMixin:
             )
 
             # Initialize COM for this thread
-            if sys.platform == "win32" and pythoncom is not None:
-                try:
-                    pythoncom.CoInitialize()
-                except Exception as e:
-                    logger.debug(f"CoInitialize: {e}")
+            if sys.platform == "win32":
+                ensure_default_desktop()
+                if pythoncom is not None:
+                    try:
+                        pythoncom.CoInitialize()
+                    except Exception as e:
+                        logger.debug(f"CoInitialize: {e}")
 
             # Try to get existing running instance
             try:
@@ -130,6 +182,7 @@ class ConnectionMixin:
                     f"{self.cad_type} instance found (active via GetActiveObject)"
                 )
             except Exception as e:
+                logger.warning(f"_get_active_com_object failed for {self.cad_type}: {type(e)} {e}")
                 if is_com_busy_error(e):
                     get_com_worker().circuit_breaker.record_busy(self.cad_type, str(e))
                     logger.warning(f"{self.cad_type} is busy: {e}")
@@ -182,25 +235,10 @@ class ConnectionMixin:
                     f"(waited {self.config.startup_wait_time}s)"
                 )
 
-            # Get active document or create new
+            # Get the active document. Attaching never creates a drawing:
+            # only an explicit launch (allow_launch=True) may add one.
             if self.application is not None:
-                try:
-                    try:
-                        has_docs = int(self.application.Documents.Count) > 0
-                    except (TypeError, ValueError):
-                        has_docs = bool(self.application.Documents.Count)
-
-                    if has_docs:
-                        self.document = self.application.ActiveDocument
-                        logger.info("Using existing active document")
-                    else:
-                        self.document = self.application.Documents.Add()
-                        logger.info("Created new document")
-                except Exception as doc_err:
-                    if is_com_busy_error(doc_err):
-                        get_com_worker().circuit_breaker.record_busy(self.cad_type, str(doc_err))
-                        raise CADBusyError(self.cad_type, f"AutoCAD busy while accessing document: {doc_err}") from doc_err
-                    raise CADConnectionError(self.cad_type, f"Failed accessing document: {doc_err}") from doc_err
+                self.document = self._acquire_document(create_if_missing=allow_launch)
 
             # Validate connection
             if not self._validate_document():
@@ -220,6 +258,62 @@ class ConnectionMixin:
             error_msg = f"COM error: {str(e)}"
             logger.error(f"Failed to connect to {self.cad_type}: {error_msg}")
             raise CADConnectionError(self.cad_type, error_msg) from e
+
+    def _acquire_document(self, create_if_missing: bool = False) -> Any:
+        """Return the active document, retrying transient COM failures.
+
+        Raises:
+            CADBusyError: CAD rejected the calls (modal dialog, command running).
+            CADNoDocumentError: CAD is running with no drawing open.
+            CADConnectionError: any other failure, with the COM error attached.
+        """
+        last_error: Exception | None = None
+        for attempt in range(3):
+            try:
+                document = self.application.ActiveDocument
+                if document is not None:
+                    _ = document.Name
+                    logger.info("Using existing active document via ActiveDocument")
+                    return document
+            except Exception as exc:  # noqa: BLE001 - COM raises many types
+                last_error = exc
+                if is_com_busy_error(exc):
+                    get_com_worker().circuit_breaker.record_busy(self.cad_type, str(exc))
+                    raise CADBusyError(
+                        self.cad_type, f"busy while accessing document: {exc}"
+                    ) from exc
+
+            try:
+                count = int(self.application.Documents.Count)
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+                count = -1
+
+            if count == 0:
+                if create_if_missing:
+                    logger.info("No drawing open after launch; creating one")
+                    return self.application.Documents.Add()
+                raise CADNoDocumentError(self.cad_type)
+            if count > 0:
+                try:
+                    document = self.application.Documents.Item(count - 1)
+                    _ = document.Name
+                    logger.info("Using last open document from Documents collection")
+                    return document
+                except Exception as exc:  # noqa: BLE001
+                    last_error = exc
+
+            logger.warning(
+                "Document access attempt %d for %s failed: %r",
+                attempt + 1,
+                self.cad_type,
+                last_error,
+            )
+            time.sleep(0.2 * (attempt + 1))
+
+        raise CADConnectionError(
+            self.cad_type, f"Failed accessing document: {last_error!r}"
+        )
 
     def disconnect(self) -> bool:
         """Disconnect from CAD application with COM cleanup."""
@@ -270,6 +364,14 @@ class ConnectionMixin:
 
     def is_connected(self) -> bool:
         """Check if connected to CAD application."""
+        if not get_com_worker().is_current_thread():
+            try:
+                return run_com(self._is_connected_impl)
+            except Exception:
+                return False
+        return self._is_connected_impl()
+
+    def _is_connected_impl(self) -> bool:
         try:
             return (
                 self.application is not None

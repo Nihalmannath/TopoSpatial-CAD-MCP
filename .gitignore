@@ -65,3 +65,17 @@ site/
 
 # MCP bundle packages
 *.mcpb
+
+# Model weights and datasets
+models/*.pkl
+models/*.pth
+models/Dataset/
+dataset/
+dataset_src/
+
+# Tracing: local models, envs, generated graphs
+models/checkpoints/
+models/pretrained/
+models/annotations/
+.venv-raster2seq/
+graphify-out/

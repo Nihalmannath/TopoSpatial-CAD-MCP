@@ -3027,7 +3027,7 @@ wheels = [
 
 [[package]]
 name = "topospatial-cad-mcp"
-version = "0.3.0"
+version = "3.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },

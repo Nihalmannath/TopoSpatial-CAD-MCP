@@ -77,15 +77,23 @@ class ArchitectureMixin:
             return cached or None
 
         application = self._get_application("detect AutoCAD Architecture")
-        try:
-            loaded = any(
-                "AECARCHBASE" in str(module).upper()
-                for module in application.ListArx()
-            )
-        except Exception:
-            loaded = "ARCHITECTURE" in str(
-                getattr(application, "Caption", "")
-            ).upper()
+        loaded = False
+        for attempt in range(5):
+            try:
+                arx_list = application.ListArx()
+                loaded = any("AECARCHBASE" in str(module).upper() for module in arx_list)
+                break
+            except Exception:
+                try:
+                    caption = str(getattr(application, "Caption", ""))
+                    if "ARCHITECTURE" in caption.upper():
+                        loaded = True
+                        break
+                except Exception:
+                    pass
+                if attempt < 4:
+                    time.sleep(0.2 * (attempt + 1))
+
         if not loaded:
             self._aec_version = ""
             if hasattr(self, "_local"):
@@ -93,16 +101,19 @@ class ArchitectureMixin:
             return None
 
         for version in self._registered_aec_versions():
-            try:
-                application.GetInterfaceObject(
-                    f"{self._AEC_APPLICATION_PREFIX}{version}"
-                )
-                self._aec_version = version
-                if hasattr(self, "_local"):
-                    self._local.aec_version = version
-                return version
-            except Exception:
-                continue
+            for attempt in range(3):
+                try:
+                    application.GetInterfaceObject(
+                        f"{self._AEC_APPLICATION_PREFIX}{version}"
+                    )
+                    self._aec_version = version
+                    if hasattr(self, "_local"):
+                        self._local.aec_version = version
+                    return version
+                except Exception:
+                    if attempt < 2:
+                        time.sleep(0.15 * (attempt + 1))
+                        continue
         self._aec_version = ""
         if hasattr(self, "_local"):
             self._local.aec_version = ""
@@ -128,13 +139,34 @@ class ArchitectureMixin:
         self, include_styles: bool = True, refresh: bool = False
     ) -> Dict[str, Any]:
         """Describe native architectural authoring available in this session."""
+        from adapters.com_worker import get_com_worker, run_com
+        if not get_com_worker().is_current_thread():
+            return run_com(self._get_architecture_capabilities_impl, include_styles, refresh)
+        return self._get_architecture_capabilities_impl(include_styles, refresh)
+
+    def _get_architecture_capabilities_impl(
+        self, include_styles: bool = True, refresh: bool = False
+    ) -> Dict[str, Any]:
+        """Internal implementation — must be called on the COM worker thread."""
         application = self._get_application("inspect architecture capabilities")
         version = self._discover_aec_version(refresh=refresh)
+        app_name = self.cad_type
+        app_version = ""
+        app_caption = ""
+        for attempt in range(5):
+            try:
+                app_name = str(getattr(application, "Name", self.cad_type))
+                app_version = str(getattr(application, "Version", ""))
+                app_caption = str(getattr(application, "Caption", ""))
+                break
+            except Exception:
+                if attempt < 4:
+                    time.sleep(0.2 * (attempt + 1))
         result: Dict[str, Any] = {
             "cad_type": self.cad_type,
-            "application": str(getattr(application, "Name", self.cad_type)),
-            "application_version": str(getattr(application, "Version", "")),
-            "caption": str(getattr(application, "Caption", "")),
+            "application": app_name,
+            "application_version": app_version,
+            "caption": app_caption,
             "native_aec": version is not None,
             "aec_api_version": version,
             "preferred_representation": "native_aec" if version else "standard",
@@ -212,6 +244,47 @@ class ArchitectureMixin:
             entity,
         )
 
+    @staticmethod
+    def _ensure_document_active(application: Any, document: Any, attempts: int = 20) -> None:
+        """Make ``document`` AutoCAD's active drawing (activation is async)."""
+        for _ in range(attempts):
+            try:
+                if str(application.ActiveDocument.Name) == str(document.Name):
+                    return
+            except Exception:
+                pass
+            try:
+                document.Activate()
+            except Exception:
+                pass
+            try:
+                application.ActiveDocument = document
+            except Exception:
+                pass
+            try:
+                pythoncom.PumpWaitingMessages()
+            except Exception:
+                pass
+            time.sleep(0.15)
+        raise RuntimeError(
+            f"AutoCAD did not activate drawing '{document.Name}'; click its tab and retry"
+        )
+
+    @staticmethod
+    def _opening_on_host(entity: Any, host: Any, width: float) -> bool:
+        """True when the opening's extents sit on its host wall.
+
+        Unanchored ACA openings stay at the origin. If extents cannot be read
+        the check passes rather than blocking work."""
+        try:
+            lo, hi = entity.GetBoundingBox()
+            wlo, whi = host.GetBoundingBox()
+        except Exception:
+            return True
+        cx, cy = (lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0
+        pad = float(width) + 50.0
+        return (wlo[0] - pad <= cx <= whi[0] + pad) and (wlo[1] - pad <= cy <= whi[1] + pad)
+
     def create_native_wall(
         self,
         start: Iterable[float],
@@ -236,6 +309,7 @@ class ArchitectureMixin:
                 "handle": str(wall.Handle),
                 "object_type": str(wall.ObjectName),
                 "representation": "native_aec",
+                "entity": wall,
             }
         except Exception:
             try:
@@ -283,6 +357,9 @@ class ArchitectureMixin:
                 self._set_com_property(entity, "SillHeight", float(sill_height))
 
             application = self._get_application(f"anchor native {opening_type}")
+            # ACA anchors only bind inside the drawing AutoCAD has active. If
+            # another tab is active the opening silently stays at 0,0.
+            self._ensure_document_active(application, document)
             anchor = application.GetInterfaceObject(
                 f"{self._AEC_OPENING_ANCHOR_PREFIX}{version}"
             )
@@ -295,11 +372,23 @@ class ArchitectureMixin:
             self._set_com_property(anchor, "FlipY", swing == "out")
             self._invoke_attach_entity(anchor, entity)
             entity.Update()
+            if not self._opening_on_host(entity, host, width):
+                # One retry after re-activating, then fail loudly so the
+                # design transaction compensates instead of leaving junk.
+                self._ensure_document_active(application, document)
+                self._invoke_attach_entity(anchor, entity)
+                entity.Update()
+                if not self._opening_on_host(entity, host, width):
+                    raise RuntimeError(
+                        f"{opening_type} did not anchor to wall {host.Handle}; "
+                        f"keep drawing '{document.Name}' as the active tab in AutoCAD and retry"
+                    )
             return {
                 "handle": str(entity.Handle),
                 "object_type": str(entity.ObjectName),
                 "representation": "native_aec",
                 "host_handle": str(host.Handle),
+                "entity": entity,
             }
         except Exception:
             try:

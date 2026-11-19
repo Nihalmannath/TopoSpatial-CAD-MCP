@@ -24,6 +24,7 @@ from mcp_tools.tools import (
     register_block_tools,
     register_topology_tools,
     register_design_tools,
+    register_trace_tools,
 )
 from web.api import api_app, log_handler
 
@@ -43,7 +44,11 @@ execution plan, batch dependent CAD mutations, validate locally, and return a
 compact summary. Do not call an LLM between deterministic geometry operations or
 rerun full topology analysis when the current drawing revision is cached. Capture
 images only at meaningful checkpoints, preferably after preview and after final
-modification. Stop after preview whenever user approval is required.
+modification. Prefer native ACA wall, door, and window objects when capabilities
+report them. Reuse semantic IDs from inspect when suitable objects already exist.
+If a drawing batch reports success=false or created < total, repair its failed
+indices and inspect the drawing before reporting completion. Stop after preview
+whenever user approval is required.
 """.strip()
 
 
@@ -92,6 +97,9 @@ def register_all_tools():
 
     register_design_tools(mcp)
     logger.debug("  ✓ Design orchestration tools registered")
+
+    register_trace_tools(mcp)
+    logger.debug("  ✓ Trace tools registered")
 
     logger.info("All MCP tools registered successfully")
 

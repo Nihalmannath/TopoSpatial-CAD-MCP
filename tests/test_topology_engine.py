@@ -6,12 +6,24 @@ import json
 
 import pytest
 
+import topology_engine.engine as topology_module
 from topology_engine import (
     ChangeDocument,
     DrawingSnapshot,
     EntitySnapshot,
     TopologyEngine,
 )
+
+
+def test_room_area_uses_shapely_when_native_kernel_is_unavailable(monkeypatch) -> None:
+    monkeypatch.setattr(topology_module, "_topologic_core", None)
+
+    area = TopologyEngine._topologic_face_area(
+        [[0, 0], [5000, 0], [5000, 4000], [0, 4000]],
+        ontology_class="top:Room",
+    )
+
+    assert area == pytest.approx(20_000_000)
 
 
 def _line(handle: str, start, end, semantic=None) -> EntitySnapshot:

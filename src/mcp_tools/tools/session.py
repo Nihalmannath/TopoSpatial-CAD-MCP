@@ -327,8 +327,21 @@ def _export_view(spec: Dict[str, Any]) -> Dict[str, Any]:
 
 def _check_running(spec: Dict[str, Any]) -> Dict[str, Any]:
     """Check if any supported CAD is running without launching it."""
-    auto_detect_cad(only_if_running=True)
+    from core.exceptions import CADNoDocumentError
+
     instances = get_cad_instances()
+    if not instances:
+        try:
+            auto_detect_cad(only_if_running=True)
+        except CADNoDocumentError as e:
+            return {
+                "success": True,
+                "any_running": True,
+                "running_cad_types": [e.cad_type],
+                "document_open": False,
+                "detail": e.reason,
+            }
+        instances = get_cad_instances()
 
     if instances:
         _refresh_cache_safe()
