@@ -67,12 +67,29 @@ class CADTopologyBridge:
 
     def _snapshot_entity(self, entity: Any) -> EntitySnapshot:
         object_type = str(self._safe_get(entity, "ObjectName", "Unknown"))
+        handle = str(self._safe_get(entity, "Handle", ""))
+        geometry = self._extract_geometry(entity, object_type)
+        semantic = self.read_xdata(entity)
+        native_classes = {
+            "AECDBWALL": "top:Wall",
+            "AECDBDOOR": "top:Door",
+            "AECDBWINDOW": "top:Window",
+        }
+        native_class = native_classes.get(object_type.upper())
+        if not semantic and native_class and handle:
+            semantic = {
+                "semantic_id": f"urn:topospatial:existing:{handle}",
+                "ontology_class": native_class,
+                "managed": False,
+                "geometry": geometry,
+                "representation": "native_aec",
+            }
         return EntitySnapshot(
-            handle=str(self._safe_get(entity, "Handle", "")),
+            handle=handle,
             object_type=object_type,
             layer=str(self._safe_get(entity, "Layer", "0")).strip(),
-            geometry=self._extract_geometry(entity, object_type),
-            semantic=self.read_xdata(entity),
+            geometry=geometry,
+            semantic=semantic,
         )
 
     def _extract_geometry(self, entity: Any, object_type: str) -> Dict[str, Any]:
@@ -231,8 +248,146 @@ class CADTopologyBridge:
                 pythoncom.VT_ARRAY | pythoncom.VT_VARIANT, values
             )
             entity.SetXData(code_variant, value_variant)
-        except ImportError:
-            entity.SetXData(type_codes, values)
+        except Exception:
+            try:
+                entity.SetXData(type_codes, values)
+            except Exception as exc:
+                logger.debug("Failed to set XData on entity: %s", exc)
+
+    # Operations that only add entities or rewrite XData can be reversed
+    # through COM without the command line. Deletions and replacements cannot
+    # (the erased objects are gone), so they keep the AutoCAD undo fallback.
+    _REVERSIBLE_KINDS = frozenset(
+        {
+            "annotate_handles",
+            "update_label",
+            "update_wall_rooms",
+            "create_room_boundary",
+            "create_managed",
+        }
+    )
+    _XDATA_KINDS = frozenset({"annotate_handles", "update_label", "update_wall_rooms"})
+
+    @staticmethod
+    def _handle_key(handle: str) -> int:
+        try:
+            return int(str(handle), 16)
+        except ValueError:
+            return -1
+
+    def _modelspace_handles(self, document: Any) -> set[str] | None:
+        """Return every ModelSpace handle, or None when it cannot be listed."""
+        try:
+            return {
+                str(self._safe_get(entity, "Handle", ""))
+                for entity in self._iter_entities(document, "all")
+            } - {""}
+        except Exception as exc:  # noqa: BLE001 - COM raises many types
+            logger.warning("Could not list ModelSpace handles: %s", exc)
+            return None
+
+    def clear_xdata(self, entity: Any) -> None:
+        """Remove this server's XData from an entity (app name with no data)."""
+        try:
+            import pythoncom
+            import win32com.client
+
+            entity.SetXData(
+                win32com.client.VARIANT(pythoncom.VT_ARRAY | pythoncom.VT_I2, [1001]),
+                win32com.client.VARIANT(
+                    pythoncom.VT_ARRAY | pythoncom.VT_VARIANT, [XDATA_APP]
+                ),
+            )
+        except Exception:
+            entity.SetXData([1001], [XDATA_APP])
+
+    def _compensate(
+        self,
+        document: Any,
+        handles_to_delete: Sequence[str],
+        xdata_before: Dict[str, Dict[str, Any]],
+    ) -> Tuple[int, int]:
+        """Delete created entities (newest first) and restore prior XData,
+        inside one undo mark, without going through the command line."""
+        failures: List[str] = []
+        deleted = 0
+        undo_started = False
+        try:
+            document.StartUndoMark()
+            undo_started = True
+        except Exception:
+            pass
+        try:
+            for handle in sorted(handles_to_delete, key=self._handle_key, reverse=True):
+                try:
+                    entity = document.HandleToObject(handle)
+                except Exception:
+                    # Already erased, e.g. an anchored opening removed with its wall.
+                    continue
+                try:
+                    entity.Delete()
+                    deleted += 1
+                except Exception as exc:  # noqa: BLE001
+                    failures.append(f"delete {handle}: {exc}")
+            for handle, before in xdata_before.items():
+                try:
+                    entity = document.HandleToObject(handle)
+                    if before:
+                        self.write_xdata(document, entity, before)
+                    else:
+                        self.clear_xdata(entity)
+                except Exception as exc:  # noqa: BLE001
+                    failures.append(f"restore XData {handle}: {exc}")
+        finally:
+            if undo_started:
+                try:
+                    document.EndUndoMark()
+                except Exception:
+                    pass
+        if failures:
+            raise RuntimeError(
+                "Rollback could not reverse every change: " + "; ".join(failures[:5])
+            )
+        return deleted, len(xdata_before)
+
+    def _verify_revision(self, adapter: Any, expected_revision: str | None) -> None:
+        if expected_revision is None:
+            return
+        actual = self.snapshot(adapter, scope="all").revision
+        if actual != expected_revision:
+            raise RuntimeError(
+                "Topology rollback did not restore the preview revision "
+                f"(expected {expected_revision}, got {actual})"
+            )
+
+    def rollback_transaction(
+        self,
+        adapter: Any,
+        cad_result: Dict[str, Any] | None,
+        *,
+        expected_revision: str | None = None,
+    ) -> Dict[str, Any]:
+        """Reverse an applied transaction.
+
+        Uses the journal recorded by ``apply_operations`` to delete exactly the
+        entities it created and restore XData it changed, through COM. Falls
+        back to the AutoCAD undo command only for batches that deleted or
+        replaced entities.
+        """
+        journal = (cad_result or {}).get("journal")
+        document = adapter._get_document("topology_rollback")
+        if not journal:
+            self.rollback_last_transaction(
+                adapter, document=document, expected_revision=expected_revision
+            )
+            return {"method": "undo_command"}
+        deleted, restored = self._compensate(
+            document,
+            list(journal.get("created_handles", [])),
+            dict(journal.get("xdata_before", {})),
+        )
+        self._verify_revision(adapter, expected_revision)
+        return {"method": "compensate", "deleted": deleted, "xdata_restored": restored}
 
     def apply_operations(
         self,
@@ -242,10 +397,22 @@ class CADTopologyBridge:
         refresh: bool = True,
         rollback_revision: str | None = None,
     ) -> Dict[str, Any]:
-        """Apply a previewed operation list inside one AutoCAD undo mark."""
+        """Apply a previewed operation list inside one AutoCAD undo mark.
+
+        Create and XData-only batches are journaled, so a failure here or a
+        later rollback is reversed through COM rather than the asynchronous
+        command line.
+        """
         document = adapter._get_document("topology_apply")
         created: List[Dict[str, Any]] = []
         modified_handles: List[str] = []
+        reversible = bool(operations) and all(
+            operation.get("kind") in self._REVERSIBLE_KINDS for operation in operations
+        )
+        pre_handles = self._modelspace_handles(document) if reversible else None
+        if pre_handles is None:
+            reversible = False
+        xdata_before: Dict[str, Dict[str, Any]] = {}
         undo_started = False
         try:
             document.StartUndoMark()
@@ -255,19 +422,44 @@ class CADTopologyBridge:
                 "CAD does not expose StartUndoMark; continuing with best-effort undo"
             )
 
+        host_wall_cache: Dict[str, Dict[str, Any]] = {}
         try:
             for operation in operations:
-                result = self._apply_operation(adapter, document, operation)
+                if reversible and operation.get("kind") in self._XDATA_KINDS:
+                    for handle in operation.get("handles", []):
+                        if handle not in xdata_before:
+                            xdata_before[handle] = self.read_xdata(
+                                document.HandleToObject(handle)
+                            )
+                result = self._apply_operation(
+                    adapter, document, operation, host_wall_cache=host_wall_cache
+                )
                 created.extend(result.get("created", []))
                 modified_handles.extend(result.get("modified_handles", []))
             if undo_started:
                 document.EndUndoMark()
+            journal = None
+            if reversible:
+                listed = {
+                    str(handle)
+                    for item in created
+                    for handle in item.get("handles", [])
+                }
+                post_handles = self._modelspace_handles(document)
+                new_handles = listed | (
+                    post_handles - pre_handles if post_handles is not None else set()
+                )
+                journal = {
+                    "created_handles": sorted(new_handles, key=self._handle_key),
+                    "xdata_before": xdata_before,
+                }
             if refresh:
                 adapter.refresh_view()
             return {
                 "success": True,
                 "created": created,
                 "modified_handles": sorted(set(modified_handles)),
+                "journal": journal,
             }
         except Exception:
             if undo_started:
@@ -275,6 +467,16 @@ class CADTopologyBridge:
                     document.EndUndoMark()
                 except Exception:
                     pass
+            if reversible:
+                # Remove everything this batch added, including entities a
+                # half-finished operation created before it failed.
+                post_handles = self._modelspace_handles(document)
+                if post_handles is not None:
+                    self._compensate(
+                        document, sorted(post_handles - pre_handles), xdata_before
+                    )
+                    self._verify_revision(adapter, rollback_revision)
+                    raise
             self.rollback_last_transaction(
                 adapter,
                 document=document,
@@ -319,7 +521,11 @@ class CADTopologyBridge:
                 "Topology rollback did not restore the preview revision "
                 f"(expected {expected_revision}, got {actual})"
             )
-        raise RuntimeError("Timed out waiting for AutoCAD topology rollback")
+        raise RuntimeError(
+            "Timed out waiting for AutoCAD topology rollback. The undo command "
+            "is queued on AutoCAD's command line and only runs while AutoCAD is "
+            "idle and in front; it may still run later."
+        )
 
     def resolve_operation_representations(
         self,
@@ -348,7 +554,7 @@ class CADTopologyBridge:
                 continue
             requested = operation.get("representation", "auto")
             selected = self._select_representation(adapter, requested)
-            if ontology_class in {"top:Wall", "top:Room"}:
+            if ontology_class in {"top:Wall", "top:Room", "top:Space"}:
                 operation["representation"] = selected
                 semantic_id = operation.get("semantic_id")
                 if ontology_class == "top:Wall" and semantic_id:
@@ -394,6 +600,7 @@ class CADTopologyBridge:
 
         style_contract = {
             "top:Room": ("wall", "wall_style"),
+            "top:Space": ("wall", "wall_style"),
             "top:Wall": ("wall", "style"),
             "top:Door": ("door", "style"),
             "top:Window": ("window", "style"),
@@ -416,7 +623,11 @@ class CADTopologyBridge:
             geometry[geometry_key] = canonical[requested.casefold()]
 
     def _apply_operation(
-        self, adapter: Any, document: Any, operation: Dict[str, Any]
+        self,
+        adapter: Any,
+        document: Any,
+        operation: Dict[str, Any],
+        host_wall_cache: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
         kind = operation["kind"]
         if kind == "annotate_handles":
@@ -464,14 +675,18 @@ class CADTopologyBridge:
             )
             return {"created": created, "modified_handles": []}
         if kind == "create_managed":
-            created = self._create_managed(adapter, document, operation)
+            created = self._create_managed(
+                adapter, document, operation, host_wall_cache=host_wall_cache
+            )
             return {"created": created, "modified_handles": []}
         if kind == "replace_managed":
             for handle in operation.get("old_handles", []):
                 document.HandleToObject(handle).Delete()
             replacement = dict(operation)
             replacement["kind"] = "create_managed"
-            created = self._create_managed(adapter, document, replacement)
+            created = self._create_managed(
+                adapter, document, replacement, host_wall_cache=host_wall_cache
+            )
             return {
                 "created": created,
                 "modified_handles": operation.get("old_handles", []),
@@ -483,14 +698,18 @@ class CADTopologyBridge:
         raise ValueError(f"Unknown topology operation '{kind}'")
 
     def _create_managed(
-        self, adapter: Any, document: Any, operation: Dict[str, Any]
+        self,
+        adapter: Any,
+        document: Any,
+        operation: Dict[str, Any],
+        host_wall_cache: Dict[str, Any] | None = None,
     ) -> List[Dict[str, Any]]:
         ontology_class = operation["ontology_class"]
         semantic_id = operation["semantic_id"]
         geometry = operation["geometry"]
         label = operation.get("label", "")
         representation = operation.get("representation", "auto")
-        if ontology_class == "top:Room":
+        if ontology_class in {"top:Room", "top:Space"}:
             return self._create_room(
                 adapter,
                 document,
@@ -509,6 +728,7 @@ class CADTopologyBridge:
                 bounding_room_ids=operation.get("bounding_room_ids"),
                 aliases=operation.get("aliases"),
                 representation=representation,
+                host_wall_cache=host_wall_cache,
             )
         if ontology_class == "top:Door":
             return self._create_door(
@@ -518,6 +738,7 @@ class CADTopologyBridge:
                 label,
                 geometry,
                 representation=representation,
+                host_wall_cache=host_wall_cache,
             )
         if ontology_class == "top:Window":
             return self._create_window(
@@ -527,6 +748,7 @@ class CADTopologyBridge:
                 label,
                 geometry,
                 representation=representation,
+                host_wall_cache=host_wall_cache,
             )
         raise ValueError(f"Unsupported managed class '{ontology_class}'")
 
@@ -539,6 +761,19 @@ class CADTopologyBridge:
         geometry: Dict[str, Any],
         representation: str = "auto",
     ) -> List[Dict[str, Any]]:
+        if "boundary" in geometry:
+            # Explicit clear-interior polygon: no origin/width/depth, and no
+            # implicit walls (walls are created explicitly in the same batch).
+            boundary = [(float(p[0]), float(p[1])) for p in geometry["boundary"]]
+            return self._create_room_boundary(
+                adapter,
+                document,
+                semantic_id,
+                label,
+                boundary,
+                managed=True,
+                geometry={"boundary": [[x, y] for x, y in boundary]},
+            )
         origin = tuple(geometry["origin"])
         width = float(geometry["clear_width"])
         depth = float(geometry["clear_depth"])
@@ -611,6 +846,7 @@ class CADTopologyBridge:
         bounding_room_ids: Sequence[str] | None = None,
         aliases: Sequence[str] | None = None,
         representation: str = "auto",
+        host_wall_cache: Dict[str, Any] | None = None,
     ) -> List[Dict[str, Any]]:
         self._ensure_layer(adapter, document, WALL_LAYER, "white")
         actual_representation = self._select_representation(adapter, representation)
@@ -652,16 +888,21 @@ class CADTopologyBridge:
         }
         if len(room_ids) == 1:
             payload["parent_id"] = room_ids[0]
-        self.write_xdata(document, document.HandleToObject(handle), payload)
-        return [
-            {
-                "semantic_id": semantic_id,
-                "ontology_class": "top:Wall",
-                "handles": [handle],
-                "representation": actual_representation,
-                "object_type": object_type,
-            }
-        ]
+        entity_target = (native.get("entity") if actual_representation == "native_aec" else None) or document.HandleToObject(handle)
+        self.write_xdata(document, entity_target, payload)
+        wall_entry = {
+            "semantic_id": semantic_id,
+            "ontology_class": "top:Wall",
+            "handles": [handle],
+            "representation": actual_representation,
+            "object_type": object_type,
+            "geometry": geometry,
+            "_entity_handle": handle,
+            "_object_type": object_type,
+        }
+        if host_wall_cache is not None:
+            host_wall_cache[semantic_id] = wall_entry
+        return [wall_entry]
 
     def _create_door(
         self,
@@ -671,9 +912,12 @@ class CADTopologyBridge:
         label: str,
         geometry: Dict[str, Any],
         representation: str = "auto",
+        host_wall_cache: Dict[str, Any] | None = None,
     ) -> List[Dict[str, Any]]:
         self._ensure_layer(adapter, document, DOOR_LAYER, "yellow")
-        wall = self._find_host_wall(document, geometry["host_wall_id"])
+        wall = self._find_host_wall(
+            document, geometry["host_wall_id"], host_wall_cache=host_wall_cache
+        )
         start, direction, normal, length, _thickness = self._wall_frame(
             wall["geometry"]
         )
@@ -745,7 +989,8 @@ class CADTopologyBridge:
             "representation": actual_representation,
         }
         for handle in handles:
-            self.write_xdata(document, document.HandleToObject(handle), payload)
+            entity_target = (native.get("entity") if actual_representation == "native_aec" else None) or document.HandleToObject(handle)
+            self.write_xdata(document, entity_target, payload)
         return [
             {
                 "semantic_id": semantic_id,
@@ -764,9 +1009,12 @@ class CADTopologyBridge:
         label: str,
         geometry: Dict[str, Any],
         representation: str = "auto",
+        host_wall_cache: Dict[str, Any] | None = None,
     ) -> List[Dict[str, Any]]:
         self._ensure_layer(adapter, document, WINDOW_LAYER, "cyan")
-        wall = self._find_host_wall(document, geometry["host_wall_id"])
+        wall = self._find_host_wall(
+            document, geometry["host_wall_id"], host_wall_cache=host_wall_cache
+        )
         start, direction, normal, length, thickness = self._wall_frame(wall["geometry"])
         offset = float(geometry["offset"])
         width = float(geometry["width"])
@@ -819,7 +1067,8 @@ class CADTopologyBridge:
             "representation": actual_representation,
         }
         for handle in handles:
-            self.write_xdata(document, document.HandleToObject(handle), payload)
+            entity_target = (native.get("entity") if actual_representation == "native_aec" else None) or document.HandleToObject(handle)
+            self.write_xdata(document, entity_target, payload)
         return [
             {
                 "semantic_id": semantic_id,
@@ -830,9 +1079,16 @@ class CADTopologyBridge:
             }
         ]
 
-    def _find_host_wall(self, document: Any, semantic_id: str) -> Dict[str, Any]:
+    def _find_host_wall(
+        self,
+        document: Any,
+        semantic_id: str,
+        host_wall_cache: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        if host_wall_cache is not None and semantic_id in host_wall_cache:
+            return host_wall_cache[semantic_id]
         for entity in self._iter_entities(document, "all"):
-            semantic = self.read_xdata(entity)
+            semantic = self._snapshot_entity(entity).semantic
             if (
                 semantic.get("semantic_id") == semantic_id
                 and semantic.get("ontology_class") == "top:Wall"
@@ -846,6 +1102,8 @@ class CADTopologyBridge:
                     result["_object_type"] = str(
                         self._safe_get(entity, "ObjectName", "")
                     )
+                    if host_wall_cache is not None:
+                        host_wall_cache[semantic_id] = result
                     return result
         raise ValueError(f"Host wall '{semantic_id}' was not found")
 
@@ -1013,9 +1271,17 @@ class CADTopologyBridge:
         color: str,
         plottable: bool = True,
     ) -> None:
-        if name not in adapter.list_layers():
-            if not adapter.create_layer(name, color=color, lineweight=0):
-                raise RuntimeError(f"Failed to create layer '{name}'")
+        try:
+            layer_item = document.Layers.Item(name)
+            try:
+                layer_item.Plottable = plottable
+            except Exception:
+                pass
+            return
+        except Exception:
+            pass
+        if not adapter.create_layer(name, color=color, lineweight=0):
+            raise RuntimeError(f"Failed to create layer '{name}'")
         try:
             document.Layers.Item(name).Plottable = plottable
         except Exception:

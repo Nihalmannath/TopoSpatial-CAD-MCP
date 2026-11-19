@@ -65,6 +65,47 @@ NOT_RUNNING_STRING_MARKERS: Tuple[str, ...] = (
 )
 
 
+_desktop_state = threading.local()
+
+
+def ensure_default_desktop() -> bool:
+    """Ensure the calling thread is attached to the interactive 'Default' desktop on Windows.
+    
+    When processes are spawned in non-default desktop environments (e.g. agent sandboxes),
+    COM Running Object Table (ROT) lookup for interactive applications requires switching
+    the thread's desktop station to 'Default'.
+    """
+    if sys.platform != "win32":
+        return True
+    # Attach once per thread: OpenDesktopW returns a new handle on every call
+    # and a handle assigned to a thread cannot be closed, so repeated calls
+    # leaked one desktop handle per connect.
+    if getattr(_desktop_state, "attached", None) is not None:
+        return _desktop_state.attached
+    attached = False
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+        user32.OpenDesktopW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        user32.OpenDesktopW.restype = wintypes.HANDLE
+        user32.SetThreadDesktop.argtypes = [wintypes.HANDLE]
+        user32.SetThreadDesktop.restype = wintypes.BOOL
+        user32.CloseDesktop.argtypes = [wintypes.HANDLE]
+        user32.CloseDesktop.restype = wintypes.BOOL
+
+        DESKTOP_ALL_ACCESS = 0x01FF
+        h_desk = user32.OpenDesktopW("Default", 0, False, DESKTOP_ALL_ACCESS)
+        if h_desk:
+            attached = bool(user32.SetThreadDesktop(h_desk))
+            if not attached:
+                user32.CloseDesktop(h_desk)
+    except Exception as e:
+        logger.debug(f"ensure_default_desktop: {e}")
+    _desktop_state.attached = attached
+    return attached
+
+
 def get_hresult(exc: Exception) -> Optional[int]:
     """Extract integer HRESULT from pywintypes.com_error or exception attributes."""
     val = None
@@ -295,6 +336,7 @@ class COMWorker:
         self._thread_id = threading.get_ident()
         # Initialize COM in Single-Threaded Apartment on Windows
         if sys.platform == "win32":
+            ensure_default_desktop()
             try:
                 import pythoncom
                 pythoncom.CoInitialize()

@@ -42,6 +42,25 @@ class CADBusyError(CADConnectionError):
         return f"CAD_BUSY: {self.cad_type} is busy or unresponsive: {self.reason}"
 
 
+class CADNoDocumentError(CADConnectionError):
+    """Raised when the CAD application is running but has no open drawing.
+
+    This is distinct from "not running": the application must not be
+    relaunched and no other CAD type should be tried.  Attaching never
+    creates a drawing on the user's behalf.
+    """
+
+    def __init__(self, cad_type: str, reason: str = ""):
+        super().__init__(
+            cad_type,
+            reason
+            or (
+                f"{cad_type} is running but no drawing is open. Open a drawing "
+                "in the CAD window, or call manage_files 'new' explicitly."
+            ),
+        )
+
+
 class CADOperationError(TopoSpatialError):
     """Raised when a CAD operation fails."""
 

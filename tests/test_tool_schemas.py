@@ -66,3 +66,5 @@ def test_server_instructions_expose_in_place_modification_rule() -> None:
     assert "never create a new drawing" in MCP_INSTRUCTIONS
     assert "bounded topology neighborhood" in MCP_INSTRUCTIONS
     assert "Stop after preview" in MCP_INSTRUCTIONS
+    assert "Prefer native ACA wall, door, and window objects" in MCP_INSTRUCTIONS
+    assert "created < total" in MCP_INSTRUCTIONS

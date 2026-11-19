@@ -201,21 +201,27 @@ class UtilityMixin:
                 )
                 return
 
-        try:
-            # Simple ping to verify COM proxy is still valid
-            _ = self.application.Visible
-        except Exception as e:
-            if is_com_busy_error(e):
-                raise CADBusyError(
-                    getattr(self, "cad_type", "autocad"),
-                    f"AutoCAD is busy or in a modal dialog: {e}",
-                ) from e
+        for attempt in range(4):
+            try:
+                # Simple ping to verify COM proxy is still valid
+                _ = self.application.Visible
+                break
+            except Exception as e:
+                if is_com_busy_error(e):
+                    if attempt < 3:
+                        time.sleep(0.15 * (attempt + 1))
+                        continue
+                    raise CADBusyError(
+                        getattr(self, "cad_type", "autocad"),
+                        f"AutoCAD is busy or in a modal dialog: {e}",
+                    ) from e
 
-            logger.debug(f"Connection validation failed: {e}")
-            from .connection_mixin import ConnectionMixin
+                logger.debug(f"Connection validation failed: {e}")
+                from .connection_mixin import ConnectionMixin
 
-            if isinstance(self, ConnectionMixin):
-                self.connect(only_if_running=True, allow_launch=False)
+                if isinstance(self, ConnectionMixin):
+                    self.connect(only_if_running=True, allow_launch=False)
+                break
 
     def _get_application(self, operation: str = "operation") -> Any:
         """Helper to ensure application is available for an operation."""
@@ -354,16 +360,32 @@ class UtilityMixin:
         color: str | int,
         lineweight: int = 0,
     ) -> None:
-        """Apply common properties to an entity."""
+        """Apply common properties to an entity.
+
+        Each property is set independently so one failure no longer drops the
+        rest.  A missing layer is created first: AutoCAD raises "Key not found"
+        when assigning an entity to a layer that does not exist.
+        """
+        if layer:
+            try:
+                entity.Layer = layer
+            except Exception:
+                try:
+                    self.document.Layers.Add(layer)
+                    entity.Layer = layer
+                    logger.info(f"Created missing layer '{layer}'")
+                except Exception as e:
+                    logger.warning(f"Failed to set layer '{layer}': {e}")
         try:
-            entity.Layer = layer
-            if isinstance(color, str):
-                color = self._get_color_index(color)
-            entity.Color = color
-            if lineweight > 0:
-                entity.LineWeight = self.validate_lineweight(lineweight)
+            color_index = self._get_color_index(color) if isinstance(color, str) else color
+            entity.Color = color_index
         except Exception as e:
-            logger.warning(f"Failed to apply properties: {e}")
+            logger.warning(f"Failed to set color '{color}': {e}")
+        if lineweight > 0:
+            try:
+                entity.LineWeight = self.validate_lineweight(lineweight)
+            except Exception as e:
+                logger.warning(f"Failed to set lineweight {lineweight}: {e}")
 
     def _track_entity(self, entity: Any, entity_type: str) -> None:
         """Track entity in drawing state."""

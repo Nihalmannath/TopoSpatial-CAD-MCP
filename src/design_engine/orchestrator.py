@@ -182,7 +182,9 @@ class DesignOrchestrator:
         self, request: GetDraftContextDesignRequest, adapter: Any, task_id: str
     ) -> Dict[str, Any]:
         from .service import application_service
-        drawing = request.drawing_name or (adapter.document.Name if adapter and adapter.document else "")
+        drawing = request.drawing_name or ""
+        if not drawing and adapter is not None and getattr(adapter, "document", None):
+            drawing = str(self._run_cad_once(adapter, lambda: adapter.document.Name, timeout=30.0))
         context = application_service.workspace.draft_context(
             drawing, detail_level=request.detail_level
         )
@@ -271,11 +273,15 @@ class DesignOrchestrator:
         expected_drawing: Optional[str] = None,
     ) -> Tuple[Any, Dict[str, Any], bool]:
         if expected_drawing and hasattr(adapter, "document") and adapter.document:
-            try:
+
+            def _switch() -> None:
                 if adapter.document.Name != expected_drawing and hasattr(adapter, "switch_drawing"):
                     adapter.switch_drawing(expected_drawing)
-            except Exception:
-                pass
+
+            try:
+                self._run_cad_once(adapter, _switch, timeout=60.0)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Could not switch to drawing %s: %s", expected_drawing, exc)
         snapshot, retries = self._run_cad(
             adapter, lambda: self.bridge.snapshot(adapter, scope)
         )
@@ -558,6 +564,7 @@ class DesignOrchestrator:
                 refresh=False,
                 rollback_revision=current.revision,
             ),
+            timeout=300.0,
         )
         self.metrics.add(
             task_id,
@@ -585,11 +592,9 @@ class DesignOrchestrator:
             sidecars = self.bridge.write_sidecars(updated, analysis["graph"], turtle)
         except Exception:
             logger.exception("Post-apply verification failed; rolling CAD back")
-            self.bridge.rollback_last_transaction(
-                adapter, expected_revision=current.revision
-            )
+            self._bridge_rollback(adapter, cad_result, current.revision)
             self.cache.invalidate(current.drawing_name)
-            adapter.refresh_view()
+            self._refresh_view(adapter)
             raise
 
         result = {
@@ -603,7 +608,7 @@ class DesignOrchestrator:
             "operation_count": len(transaction.operations),
         }
         self.transactions.mark_applied(request.transaction_id, result)
-        adapter.refresh_view()
+        self._refresh_view(adapter)
         return {
             "success": True,
             "task_id": task_id,
@@ -647,14 +652,37 @@ class DesignOrchestrator:
         applied_revision = transaction.result.get("revision")
         if current.drawing_name != transaction.drawing_name:
             raise ValueError("The active drawing differs from the transaction drawing")
+        if current.revision == transaction.base_revision:
+            # Already undone outside the server (e.g. a manual U in AutoCAD):
+            # reconcile the transaction state instead of undoing again.
+            self.transactions.mark_rolled_back(
+                request.transaction_id,
+                {
+                    "drawing": current.drawing_name,
+                    "revision": current.revision,
+                    "note": "drawing was already at the pre-apply revision",
+                },
+            )
+            self.cache.invalidate(current.drawing_name)
+            return {
+                "success": True,
+                "task_id": task_id,
+                "transaction_id": request.transaction_id,
+                "status": "rolled_back",
+                "reconciled": True,
+            }
         if current.revision != applied_revision:
             raise ValueError(
                 "Rollback is unsafe because the drawing changed after this transaction"
             )
-        self.bridge.rollback_last_transaction(
-            adapter, expected_revision=transaction.base_revision
+        # Undo and the follow-up snapshot touch COM objects owned by the worker
+        # thread; calling them here raised "CoInitialize has not been called".
+        rollback_info = self._bridge_rollback(
+            adapter, transaction.result.get("cad"), transaction.base_revision
         )
-        restored = self.bridge.snapshot(adapter, scope="all")
+        restored, _ = self._run_cad(
+            adapter, lambda: self.bridge.snapshot(adapter, scope="all")
+        )
         self.cache.invalidate(restored.drawing_name)
         analysis = self._analysis_executor.submit(
             lambda: self.engine.analyze(restored)
@@ -668,9 +696,10 @@ class DesignOrchestrator:
             "drawing": restored.drawing_name,
             "revision": restored.revision,
             "sidecars": sidecars,
+            "method": (rollback_info or {}).get("method", "undo_command"),
         }
         self.transactions.mark_rolled_back(request.transaction_id, result)
-        adapter.refresh_view()
+        self._refresh_view(adapter)
         return {
             "success": True,
             "task_id": task_id,
@@ -1110,8 +1139,52 @@ class DesignOrchestrator:
             task_id, execution_time_ms=(time.perf_counter() - started) * 1000.0
         )
 
+    @staticmethod
+    def _run_cad_once(
+        adapter: Any, operation: Any, timeout: float | None = 120.0
+    ) -> Any:
+        """Run a non-idempotent CAD operation (undo, view refresh) exactly once
+        on the COM worker thread.  Never retried: a retried undo removes more
+        than the transaction."""
+        from adapters.com_worker import run_com
+
+        cad_type = getattr(adapter, "cad_type", "autocad")
+        return run_com(operation, cad_type=cad_type, timeout=timeout, retry_busy=False)
+
+    def _bridge_rollback(
+        self,
+        adapter: Any,
+        cad_result: Dict[str, Any] | None,
+        expected_revision: str | None,
+    ) -> Dict[str, Any]:
+        """Reverse an applied batch on the COM worker, exactly once."""
+        rollback = getattr(self.bridge, "rollback_transaction", None)
+
+        def run() -> Dict[str, Any]:
+            if callable(rollback):
+                return rollback(
+                    adapter, cad_result, expected_revision=expected_revision
+                )
+            self.bridge.rollback_last_transaction(
+                adapter, expected_revision=expected_revision
+            )
+            return {"method": "undo_command"}
+
+        return self._run_cad_once(adapter, run)
+
+    def _refresh_view(self, adapter: Any) -> None:
+        """Refresh the CAD view on the COM worker; failures are cosmetic."""
+        try:
+            self._run_cad_once(adapter, adapter.refresh_view, timeout=30.0)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("View refresh failed: %s", exc)
+
     def _run_cad(
-        self, adapter: Any, operation: Any, allow_reconnect: bool = False
+        self,
+        adapter: Any,
+        operation: Any,
+        allow_reconnect: bool = False,
+        timeout: float | None = 180.0,
     ) -> Tuple[Any, int]:
         """Run a CAD operation serialized on COM worker without mid-transaction reconnect."""
         from adapters.com_worker import run_com
@@ -1129,6 +1202,6 @@ class DesignOrchestrator:
         cad_type = getattr(adapter, "cad_type", "autocad")
         on_retry = reconnect if allow_reconnect else None
         return self.retry.run(
-            lambda: run_com(execute_on_worker, cad_type=cad_type),
+            lambda: run_com(execute_on_worker, cad_type=cad_type, timeout=timeout),
             on_retry=on_retry,
         )

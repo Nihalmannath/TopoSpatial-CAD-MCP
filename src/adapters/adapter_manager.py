@@ -38,6 +38,7 @@ class AdapterRegistry:
         """
         self._adapter: Optional[Any] = None
         self._cad_type: Optional[str] = None
+        self._last_detect_error: Optional[Exception] = None
         self._instance_lock = threading.Lock()
 
     @classmethod
@@ -105,8 +106,11 @@ class AdapterRegistry:
             if self._adapter is not None and self._adapter.is_connected():
                 return self._adapter
 
+            detail = ""
+            if self._last_detect_error is not None:
+                detail = f" (last error: {self._last_detect_error})"
             raise CADConnectionError(
-                "cad", "Could not connect to any supported CAD application"
+                "cad", f"Could not connect to any supported CAD application{detail}"
             )
 
     def _auto_detect_internal(
@@ -114,7 +118,9 @@ class AdapterRegistry:
     ) -> None:
         """Internal auto-detection logic within the locked context."""
         from adapters import AutoCADAdapter
-        from core.exceptions import CADBusyError
+        from core.exceptions import CADBusyError, CADNoDocumentError
+
+        self._last_detect_error = None
 
         # Prefer AutoCAD. Trying an uninstalled CAD first adds delays and can
         # obscure the useful AutoCAD connection error in MCP clients.
@@ -131,11 +137,17 @@ class AdapterRegistry:
                     self._cad_type = ct
                     logger.info(f"Auto-detected: {ct} is available and active")
                     return
-            except CADBusyError:
-                # If AutoCAD is busy, it IS running! Never try other CADs or treat as absent.
+            except (CADBusyError, CADNoDocumentError):
+                # The CAD IS running (busy, or no drawing open). Never try other
+                # CADs or report it as absent.
                 raise
             except Exception as e:
-                logger.debug(f"{ct} not available: {e}")
+                # Keep the real reason visible: a found-but-failed attach used to
+                # surface only as "Could not connect to any supported CAD".
+                if ct == cad_priorities[0] or not isinstance(self._last_detect_error, Exception):
+                    self._last_detect_error = e
+                level = logging.WARNING if "not running" not in str(e).lower() else logging.DEBUG
+                logger.log(level, f"{ct} not available: {e}")
                 continue
 
     def get_cad_instances(self) -> Dict[str, Any]:

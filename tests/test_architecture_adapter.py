@@ -87,6 +87,7 @@ def test_create_native_wall_sets_modern_aca_properties() -> None:
         "handle": "A1",
         "object_type": "AecDbWall",
         "representation": "native_aec",
+        "entity": wall,
     }
 
 

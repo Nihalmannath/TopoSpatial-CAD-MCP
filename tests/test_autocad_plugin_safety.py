@@ -1,7 +1,7 @@
 from pathlib import Path
 
 
-SOURCE = Path("plugins/autocad/src/TopoSpatialPlugin.cs")
+SOURCE = Path(__file__).resolve().parent.parent / "plugins" / "autocad" / "src" / "TopoSpatialPlugin.cs"
 
 
 def test_show_editor_does_not_enable_events() -> None:

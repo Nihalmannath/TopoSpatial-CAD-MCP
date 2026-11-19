@@ -53,6 +53,45 @@ except ImportError:  # pragma: no cover - exercised when topology extra is absen
     _TopologicEdge = _TopologicFace = _TopologicOntology = None
     _TopologicVertex = _TopologicWire = None
 
+try:
+    import topologic_core as _topologic_core  # noqa: F401
+except ImportError:  # pragma: no cover - also covers blocked native DLLs
+    _topologic_core = None
+
+
+_ROOM_FIELDS = {
+    "origin",
+    "clear_width",
+    "clear_depth",
+    "wall_thickness",
+    "rotation_deg",
+    "wall_height",
+    "wall_style",
+    "boundary",
+}
+_GEOMETRY_CONTRACTS = {
+    "top:Room": (
+        _ROOM_FIELDS,
+        '{"origin":[0,0],"clear_width":4000,"clear_depth":3000}',
+    ),
+    "top:Space": (
+        _ROOM_FIELDS,
+        '{"origin":[0,0],"clear_width":4000,"clear_depth":3000}',
+    ),
+    "top:Wall": (
+        {"start", "end", "thickness", "height", "style"},
+        '{"start":[0,0],"end":[5000,0],"thickness":200}',
+    ),
+    "top:Door": (
+        {"host_wall_id", "offset", "width", "height", "style", "hinge", "swing", "swing_angle_deg"},
+        '{"host_wall_id":"<wall id>","offset":500,"width":900,"hinge":"left","swing":"in"}',
+    ),
+    "top:Window": (
+        {"host_wall_id", "offset", "width", "height", "sill_height", "style"},
+        '{"host_wall_id":"<wall id>","offset":1000,"width":1200,"sill_height":900}',
+    ),
+}
+
 
 class TopologyUnavailableError(RuntimeError):
     """Raised when the optional topology dependency group is not installed."""
@@ -81,27 +120,14 @@ class TopologyEngine:
 
     @staticmethod
     def ensure_available() -> None:
-        """Verify both the Python facade and its geometry kernel are importable."""
-        try:
-            import topologic_core  # noqa: F401
-            import topologicpy  # noqa: F401
-        except ImportError as exc:
-            raise TopologyUnavailableError(
-                "Topology support is not installed. Run `uv sync --extra topology` "
-                "and restart the MCP server."
-            ) from exc
+        """Require the 2D geometry backend used by planning and analysis."""
         if any(
             item is None
-            for item in (
-                _TopologicEdge,
-                _TopologicFace,
-                _TopologicOntology,
-                _TopologicVertex,
-                _TopologicWire,
-            )
+            for item in (_LineString, _Point, _Polygon, _polygonize, _unary_union)
         ):
             raise TopologyUnavailableError(
-                "TopologicPy facade modules failed to load with topologic_core"
+                "Shapely is missing. Install the topology dependencies and "
+                "restart the MCP server."
             )
 
     def analyze(self, snapshot: DrawingSnapshot) -> Dict[str, Any]:
@@ -403,6 +429,21 @@ class TopologyEngine:
         label: str | None = None,
     ) -> float:
         TopologyEngine.ensure_available()
+        if _topologic_core is None or any(
+            item is None
+            for item in (
+                _TopologicEdge,
+                _TopologicFace,
+                _TopologicOntology,
+                _TopologicVertex,
+                _TopologicWire,
+            )
+        ):
+            assert _Polygon is not None
+            polygon = _Polygon(boundary)
+            if polygon.is_empty or not polygon.is_valid:
+                raise ValueError("Room boundary is not a valid polygon")
+            return float(polygon.area)
         assert _TopologicVertex is not None
         assert _TopologicEdge is not None
         assert _TopologicWire is not None
@@ -1132,10 +1173,25 @@ class TopologyEngine:
         value = dict(geometry)
         normalized: Dict[str, Any]
 
+        # Report unknown fields first: a misspelt field (width instead of
+        # clear_width) used to surface as "clear_width must be positive".
+        contract = _GEOMETRY_CONTRACTS.get(ontology_class)
+        if contract is not None:
+            fields, example = contract
+            unknown_first = set(value) - fields
+            if ontology_class in {"top:Room", "top:Space"} and "boundary" in value:
+                unknown_first = set(value) - {"boundary"}
+            if unknown_first:
+                raise ValueError(
+                    f"Unknown geometry fields for {ontology_class}: "
+                    f"{', '.join(sorted(unknown_first))}. Allowed: "
+                    f"{', '.join(sorted(fields))}. Example (mm): {example}"
+                )
+
         def point(name: str) -> List[float]:
             raw = value.get(name)
             if not isinstance(raw, (list, tuple)) or len(raw) != 2:
-                raise ValueError(f"geometry.{name} must be [x, y]")
+                raise ValueError(f"geometry.{name} must be [x, y]; got {raw!r}")
             return [float(raw[0]), float(raw[1])]
 
         def positive(name: str, default: float | None = None) -> float:

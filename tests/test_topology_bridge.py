@@ -10,6 +10,7 @@ import pytest
 
 from topology_engine import DrawingSnapshot
 from topology_engine.cad_bridge import XDATA_APP, CADTopologyBridge
+from topology_engine.engine import TopologyEngine
 
 
 class FakeRegisteredApplications:
@@ -67,6 +68,59 @@ class FakeAdapter:
 
     def undo(self, _count):
         self.undone = True
+
+
+def test_untagged_native_objects_are_available_as_semantic_nodes() -> None:
+    wall = FakeEntity("A1")
+    wall.ObjectName = "AecDbWall"
+    wall.Layer = "A-Wall"
+    wall.StartPoint = (0, 0, 0)
+    wall.EndPoint = (5000, 0, 0)
+    wall.Width = 230
+    wall.BaseHeight = 3000
+    wall.StyleName = "Standard"
+    door = FakeEntity("A2")
+    door.ObjectName = "AecDbDoor"
+    door.Layer = "A-Door"
+    door.Location = (1200, 0, 0)
+    door.Width = 900
+    door.Height = 2100
+    door.StyleName = "Standard"
+    window = FakeEntity("A3")
+    window.ObjectName = "AecDbWindow"
+    window.Layer = "A-Window"
+    window.Location = (3000, 0, 0)
+    window.Width = 1200
+    window.Height = 1200
+    window.SillHeight = 900
+    window.StyleName = "Standard"
+    entities = [wall, door, window]
+    document = SimpleNamespace(
+        Name="Plan.dwg",
+        FullName="C:/Plans/Plan.dwg",
+        ModelSpace=SimpleNamespace(Count=3, Item=lambda index: entities[index]),
+        GetVariable=lambda _name: 4,
+    )
+    bridge = CADTopologyBridge()
+
+    snapshot = bridge.snapshot(FakeAdapter(document))
+    graph = TopologyEngine().analyze(snapshot)["graph"]
+
+    assert {node["@type"] for node in graph["@graph"]} == {
+        "top:Wall",
+        "top:Door",
+        "top:Window",
+    }
+    assert all(node["cad:managed"] is False for node in graph["@graph"])
+    assert bridge._find_host_wall(document, "urn:topospatial:existing:A1") == {
+        "semantic_id": "urn:topospatial:existing:A1",
+        "ontology_class": "top:Wall",
+        "managed": False,
+        "geometry": snapshot.entities[0].geometry,
+        "representation": "native_aec",
+        "_entity_handle": "A1",
+        "_object_type": "AecDbWall",
+    }
 
 
 def test_xdata_roundtrip_chunks_large_semantic_payload() -> None:

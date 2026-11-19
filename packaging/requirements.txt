@@ -13,3 +13,5 @@ pydantic-settings>=2.0.0
 typing-extensions>=4.5.0
 shapely>=2.0.0
 networkx>=3.0.0
+topologicpy==0.9.65
+topologic-core==8.0.4

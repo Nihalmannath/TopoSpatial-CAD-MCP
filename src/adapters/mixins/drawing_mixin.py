@@ -368,6 +368,25 @@ class DrawingMixin:
         text_obj = document.ModelSpace.AddText(text, pos_array, height)
         text_obj.Rotation = self._to_radians(rotation)
 
+        try:
+            text_obj.StyleName = "Nexa"
+        except Exception:
+            try:
+                st = document.TextStyles.Add("Nexa")
+                try:
+                    st.SetFont("Nexa", False, False, 0, 0)
+                except Exception:
+                    try:
+                        st.fontFile = "Nexa-Bold.otf"
+                    except Exception:
+                        try:
+                            st.fontFile = "Nexa.ttf"
+                        except Exception:
+                            pass
+                text_obj.StyleName = "Nexa"
+            except Exception:
+                pass
+
         return self._finalize_entity(
             text_obj,
             layer,

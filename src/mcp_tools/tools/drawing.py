@@ -34,6 +34,7 @@ SHORTHAND FORMAT (one per line):
 
 import json
 import logging
+import math
 from typing import Optional, Dict, Any, Callable, List, Tuple, Union
 
 
@@ -60,6 +61,48 @@ logger = logging.getLogger(__name__)
 # ========== Entity Handlers ==========
 # Each handler: (spec_dict) -> entity_handle
 # Adapter is accessed via get_current_adapter() since @cad_tool sets it up.
+
+
+def _parse_points(value: Any) -> List[Tuple[float, ...]]:
+    """Accept shorthand separators and structured point arrays alike.
+
+    Accepted string forms: ``0,0;10,0`` / ``0,0|10,0``, whitespace separated
+    ``0,0 10,0 10,10`` and JSON-like ``[0,0],[10,0]`` or ``[[0,0],[10,0]]``.
+    """
+    if isinstance(value, str):
+        text = value.strip()
+        if text.startswith("["):
+            import json
+
+            for candidate in (text, f"[{text}]"):
+                try:
+                    decoded = json.loads(candidate)
+                except ValueError:
+                    continue
+                if isinstance(decoded, list) and decoded and all(
+                    isinstance(p, list) for p in decoded
+                ):
+                    return [tuple(float(c) for c in p) for p in decoded]
+        parts = [p.strip() for p in text.replace(";", "|").split("|") if p.strip()]
+        if len(parts) == 1:
+            tokens = text.split()
+            if len(tokens) > 1 and all("," in t and not t.endswith(",") for t in tokens):
+                parts = tokens
+        return [parse_coordinate(part) for part in parts]
+    if isinstance(value, list):
+        return [
+            parse_coordinate(point) if isinstance(point, str) else tuple(point)
+            for point in value
+        ]
+    raise ValueError("points must be a string or an array of coordinates")
+
+
+def _angle_degrees(value: Any) -> float:
+    """Normalize valid degree values into AutoCAD's 0-360 interval."""
+    angle = float(value)
+    if not math.isfinite(angle):
+        raise ValueError("angle must be finite")
+    return angle % 360.0
 
 
 def _draw_line(spec: Dict[str, Any]) -> str:
@@ -130,8 +173,8 @@ def _draw_arc(spec: Dict[str, Any]) -> str:
     validated = DrawArcRequest(
         center=parse_coordinate(spec["center"]),
         radius=spec["radius"],
-        start_angle=spec["start_angle"],
-        end_angle=spec["end_angle"],
+        start_angle=_angle_degrees(spec["start_angle"]),
+        end_angle=_angle_degrees(spec["end_angle"]),
         color=spec.get("color", "white"),
         layer=spec.get("layer", "0"),
         lineweight=spec.get("lineweight", 25),
@@ -186,8 +229,7 @@ def _draw_polyline(spec: Dict[str, Any]) -> str:
     Returns:
         Entity handle string for the created polyline.
     """
-    points_str = spec["points"]
-    point_list = [parse_coordinate(p.strip()) for p in points_str.split("|")]
+    point_list = _parse_points(spec["points"])
     validated = DrawPolylineRequest(
         points=point_list,
         closed=spec.get("closed", False),
@@ -246,8 +288,7 @@ def _draw_spline(spec: Dict[str, Any]) -> str:
     Returns:
         Entity handle string for the created spline.
     """
-    points_str = spec["points"]
-    point_list = [parse_coordinate(p.strip()) for p in points_str.split("|")]
+    point_list = _parse_points(spec["points"])
     validated = DrawSplineRequest(
         points=point_list,
         closed=spec.get("closed", False),
@@ -677,14 +718,31 @@ def register_drawing_tools(mcp):
                     }
                 )
 
+        for index in range(len(results), len(entities_data)):
+            results.append(
+                {
+                    "index": index,
+                    "success": False,
+                    "error": "Skipped after CAD_BUSY",
+                }
+            )
+
         # Single refresh after all entities drawn
         if any(r["success"] for r in results):
             adapter.refresh_view()
 
+        created = sum(1 for result in results if result["success"])
+        failed_indices = [
+            result["index"] for result in results if not result["success"]
+        ]
         return json.dumps(
             {
                 "total": len(entities_data),
-                "created": sum(1 for r in results if r["success"]),
+                "created": created,
+                "failed": len(failed_indices),
+                "failed_indices": failed_indices,
+                "success": bool(entities_data) and not failed_indices,
+                "partial": bool(created and failed_indices),
                 "results": results,
             },
             indent=2,
