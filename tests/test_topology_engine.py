@@ -619,3 +619,41 @@ def test_annotated_legacy_wall_persists_host_geometry_and_warning() -> None:
         "thickness": 200.0,
     }
     assert "defaults to 200 mm" in warnings[0]
+
+
+def _room(room_id, x0, y0, x1, y1):
+    return {
+        "@id": room_id,
+        "@type": "top:Room",
+        "cad:geometry": {"boundary": [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]},
+    }
+
+
+def test_rooms_one_wall_apart_are_adjacent_and_door_links_only_two_rooms() -> None:
+    """Rooms drawn inside their walls never touch; a corner door must not
+    connect a third room (both found by the ResPlan benchmark)."""
+    nodes = [
+        _room("a", 0, 0, 4000, 4000),
+        _room("b", 4200, 0, 8000, 4000),
+        _room("c", 0, 4200, 4000, 8000),
+        _room("far", 9000, 9000, 12000, 12000),
+        {
+            "@id": "door",
+            "@type": "top:Door",
+            "cad:geometry": {
+                "kind": "polyline",
+                "closed": True,
+                "vertices": [[4000, 3000], [4200, 3000], [4200, 3900], [4000, 3900]],
+            },
+        },
+    ]
+    triples = {
+        (r["subject"], r["predicate"], r["object"])
+        for r in TopologyEngine()._build_relations(nodes)
+    }
+    assert ("a", "top:adjacentTo", "b") in triples
+    assert ("a", "top:adjacentTo", "c") in triples
+    assert ("a", "top:adjacentTo", "far") not in triples
+    assert ("a", "top:connectsTo", "b") in triples
+    assert ("a", "top:connectsTo", "c") not in triples
+    assert ("b", "top:connectsTo", "c") not in triples

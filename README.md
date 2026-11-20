@@ -378,6 +378,40 @@ TopoSpatial-CAD-MCP/
 └── mkdocs.yml                 # Documentation site configuration
 ```
 
+## Plan Tracing (image to native ACA drawing)
+
+`trace_plan` reads a floor-plan image and, in one call, builds native AutoCAD Architecture walls, doors and windows plus named room outlines. Walls, doors and windows are applied as a single preview-and-apply transaction, so a bad trace can be rolled back.
+
+```text
+trace_plan(image_path="plan.png", room_sizes=..., apply=True)
+```
+
+- **Engines:** `engine="auto"` (default) runs the classic image tracer first and switches to the neural engine when the classic result looks poor. You can force `"classic"`, `"neural"` or the experimental `"raster2seq"`.
+- **Neural engine:** a CubiCasa5K network. It needs PyTorch and weights, which are not in the repository.
+- **Scale:** pass `room_sizes` (names and printed sizes) or `mm_per_px`, or let Tesseract OCR read "NAME / 320X307" labels from the image.
+- **Output:** an overlay and JSON report are written to `Documents\TopoSpatial Exports\traces`.
+- **Fine-tuning:** correct a trace in AutoCAD, run `export_training_example`, then train with `scripts/finetune_cubicasa.py`. See [docs/TRAINING.md](docs/TRAINING.md) and [docs/LABELING.md](docs/LABELING.md).
+
+### Setup for tracing
+
+```powershell
+uv sync --extra dev
+uv pip install torch            # neural engine (CUDA build recommended for training)
+# Optional: install Tesseract OCR and put it on PATH for room-size labels
+```
+
+1. Download the public CubiCasa5K weights (`model_best_val_loss_var.pkl`) from the [CubiCasa5k project](https://github.com/CubiCasa/CubiCasa5k) and place the file in `models/`.
+2. Or use fine-tuned weights saved as `models/cubicasa_finetuned.pth`. The tracer prefers this file when it exists.
+3. Restart your MCP client after changing code or weights.
+
+Weights and datasets are excluded from git (see `.gitignore`).
+
+### Limits and licence
+
+- Works best on plans with solid wall fill. Outline-only line drawings, cluttered plans and 3D renders often produce no usable draft, so always check the overlay before applying.
+- Room names and scale from OCR can be wrong; confirm them.
+- **CubiCasa5K weights and any model fine-tuned from them are CC BY-NC 4.0: non-commercial use only.** The repository code remains Apache 2.0.
+
 ## Documentation
 
 - [Installation and MCP client setup](docs/01-SETUP.md)
@@ -386,6 +420,7 @@ TopoSpatial-CAD-MCP/
 - [Efficient design orchestration](docs/08-DESIGN-ORCHESTRATION.md)
 - [Round-trip and response benchmarks](docs/09-EFFICIENCY-BENCHMARKS.md)
 - [Complete MCP tool reference](docs/05-REFERENCE.md)
+- [Plan tracing: training and labelling](docs/TRAINING.md)
 - [Troubleshooting](docs/04-TROUBLESHOOTING.md)
 - [Changelog](docs/03-CHANGELOG.md)
 

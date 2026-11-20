@@ -528,6 +528,9 @@ def main(argv=None):
     ap.add_argument("--close-rooms", action="store_true",
                     help="room closure from the raw masks for every neural model "
                          "(default: only for the promoted weights when neural_profile.json says so)")
+    ap.add_argument("--require-door-evidence", choices=["auto", "on", "off"], default="auto",
+                    help="empty wall gap is a door only with a drawn swing or the door mask "
+                         "(auto: on for classic, off for neural)")
     ap.add_argument("--wall-tol-mm", type=float, default=150.0)
     ap.add_argument("--junction-tol-mm", type=float, default=250.0)
     ap.add_argument("--open-tol-mm", type=float, default=400.0)
@@ -603,7 +606,8 @@ def main(argv=None):
                     trace, _ = trace_image(str(img), mm_per_px=(1.0 / ppm) if ppm else None, ocr=False,
                                            engine="classic" if weights is None else "neural", weights=weights,
                                            wall_logit_bias=bias,
-                                           close_rooms=True if (args.close_rooms and weights is not None) else None)
+                                           close_rooms=True if (args.close_rooms and weights is not None) else None,
+                                           require_door_evidence={"auto": None, "on": True, "off": False}[args.require_door_evidence])
             except Exception as exc:  # a failed trace scores zero, it is not skipped
                 error = f"{type(exc).__name__}: {exc}"
                 traceback.print_exc(limit=1)

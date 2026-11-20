@@ -113,10 +113,18 @@ class TopologyEngine:
         snap_tolerance_mm: float = 1.0,
         max_opening_gap_mm: float = 1500.0,
         min_room_dimension_mm: float = 1000.0,
+        adjacency_gap_mm: float = 300.0,
+        min_adjacency_contact_mm: float = 500.0,
     ) -> None:
         self.snap_tolerance_mm = float(snap_tolerance_mm)
         self.max_opening_gap_mm = float(max_opening_gap_mm)
         self.min_room_dimension_mm = float(min_room_dimension_mm)
+        # Rooms are drawn on the inside face of their walls, so neighbours sit
+        # one wall thickness apart and their outlines never touch. Treat two
+        # rooms as adjacent when they are within ``adjacency_gap_mm`` and face
+        # each other along at least ``min_adjacency_contact_mm``.
+        self.adjacency_gap_mm = float(adjacency_gap_mm)
+        self.min_adjacency_contact_mm = float(min_adjacency_contact_mm)
 
     @staticmethod
     def ensure_available() -> None:
@@ -589,7 +597,7 @@ class TopologyEngine:
                 if (
                     left_shape.boundary.intersection(right_shape.boundary).length
                     > self.snap_tolerance_mm
-                ):
+                ) or self._rooms_face_across_wall(left_shape, right_shape):
                     relations.add((left_id, "top:adjacentTo", right_id))
                     relations.add((right_id, "top:adjacentTo", left_id))
 
@@ -605,12 +613,7 @@ class TopologyEngine:
             door_shape = element_shapes.get(node["@id"])
             if door_shape is None:
                 continue
-            touching_rooms = [
-                room_id
-                for room_id, room_shape in room_shapes.items()
-                if room_shape.boundary.distance(door_shape)
-                <= self.max_opening_gap_mm / 2.0
-            ]
+            touching_rooms = self._door_rooms(door_shape, room_shapes)
             host_id = node.get("cad:hostWall") or node.get("cad:geometry", {}).get(
                 "host_wall_id"
             )
@@ -625,6 +628,41 @@ class TopologyEngine:
             {"subject": subject, "predicate": predicate, "object": obj}
             for subject, predicate, obj in sorted(relations)
         ]
+
+    def _rooms_face_across_wall(self, left: Any, right: Any) -> bool:
+        """True when two rooms are separated by at most one wall thickness."""
+        gap = self.adjacency_gap_mm
+        if gap <= 0 or left.distance(right) > gap:
+            return False
+        contact = left.boundary.intersection(right.buffer(gap)).length
+        return contact >= self.min_adjacency_contact_mm
+
+    def _door_rooms(self, door_shape: Any, room_shapes: Dict[str, Any]) -> List[str]:
+        """The (at most two) rooms a door opens between.
+
+        Candidates lie within half the maximum opening gap. A door spans one
+        wall, so keep the two rooms whose boundary runs along the door for the
+        longest stretch; rooms that only meet it at a corner are dropped.
+        """
+        reach = self.max_opening_gap_mm / 2.0
+        candidates = [
+            room_id
+            for room_id, room_shape in room_shapes.items()
+            if room_shape.boundary.distance(door_shape) <= reach
+        ]
+        if len(candidates) <= 2:
+            return candidates
+        band = door_shape.buffer(max(self.adjacency_gap_mm, self.snap_tolerance_mm))
+        scored = sorted(
+            (
+                (room_shapes[room_id].boundary.intersection(band).length,
+                 -room_shapes[room_id].boundary.distance(door_shape),
+                 room_id)
+                for room_id in candidates
+            ),
+            reverse=True,
+        )
+        return [room_id for _, _, room_id in scored[:2]]
 
     @staticmethod
     def _opening_shape(
